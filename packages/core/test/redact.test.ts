@@ -1,20 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { redact } from "../src/redact.ts";
 
+/** Builds a fake secret from parts so secret scanners don't flag test fixtures. None of these are real. */
+const fake = (...parts: string[]) => parts.join("");
+
+const GITHUB_TOKEN = fake("ghp", "_abcdefghijklmnopqrstuvwxyz0123456789");
+
 describe("redact", () => {
   test.each([
-    ["AWS key AKIAIOSFODNN7EXAMPLE here", "aws-access-key"],
-    ["token ghp_abcdefghijklmnopqrstuvwxyz0123456789", "github-token"],
-    ["key sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "anthropic-key"],
-    ["key sk-proj-abcdefghijklmnopqrstuvwxyz", "openai-key"],
-    ["xoxb-123456789012-abcdefghij", "slack-token"],
-    ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "jwt"],
-    // Split so secret scanners don't flag the fixture.
-    [`key sk_${"live"}_51HxAbCdEfGhIjKlMnOpQrStUv`, "stripe-key"],
-    ["key AIzaSyD-AbCdEfGhIjKlMnOpQrStUvWxYz01234", "google-api-key"],
-    ["token npm_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "npm-token"],
-    ["DB_PASSWORD=correcthorsebatterystaple", "env-secret"],
-    ["password: hunter2", "secret-assignment"],
+    [`AWS key ${fake("AKIA", "IOSFODNN7EXAMPLE")} here`, "aws-access-key"],
+    [`token ${GITHUB_TOKEN}`, "github-token"],
+    [`key ${fake("sk-", "ant-api03-abcdefghijklmnopqrstuvwxyz")}`, "anthropic-key"],
+    [`key ${fake("sk-", "proj-abcdefghijklmnopqrstuvwxyz")}`, "openai-key"],
+    [fake("xoxb", "-123456789012-abcdefghij"), "slack-token"],
+    [fake("eyJ", "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"), "jwt"],
+    [`key ${fake("sk_", "live", "_51HxAbCdEfGhIjKlMnOpQrStUv")}`, "stripe-key"],
+    [`key ${fake("AIza", "SyD-AbCdEfGhIjKlMnOpQrStUvWxYz01234")}`, "google-api-key"],
+    [`token ${fake("npm", "_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")}`, "npm-token"],
+    [fake("DB_PASSWORD=", "correcthorsebatterystaple"), "env-secret"],
+    [fake("password: ", "hunter2"), "secret-assignment"],
   ])("redacts %s", (input, rule) => {
     const result = redact(input);
     expect(result.text).toContain(`[REDACTED:${rule}]`);
@@ -22,17 +26,17 @@ describe("redact", () => {
   });
 
   test("redacts private key blocks", () => {
-    const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nabc\n-----END RSA PRIVATE KEY-----";
+    const key = fake("-----BEGIN RSA ", "PRIVATE KEY-----\nMIIEow\nabc\n-----END RSA ", "PRIVATE KEY-----");
     expect(redact(`before\n${key}\nafter`).text).toBe("before\n[REDACTED:private-key]\nafter");
   });
 
   test("keeps the label of assignments, headers, and URLs", () => {
-    expect(redact("DB_PASSWORD=hunter2hunter2x9").text).toBe("DB_PASSWORD=[REDACTED:env-secret]");
-    expect(redact('apiKey: "a1b2c3d4e5f6"').text).toBe('apiKey: "[REDACTED:secret-assignment]"');
-    expect(redact("Authorization: Bearer abcdef0123456789abcdef").text).toBe(
+    expect(redact(fake("DB_PASSWORD=", "hunter2hunter2x9")).text).toBe("DB_PASSWORD=[REDACTED:env-secret]");
+    expect(redact(fake('apiKey: "', 'a1b2c3d4e5f6"')).text).toBe('apiKey: "[REDACTED:secret-assignment]"');
+    expect(redact(fake("Authorization: Bearer ", "abcdef0123456789abcdef")).text).toBe(
       "Authorization: Bearer [REDACTED:bearer]",
     );
-    expect(redact("postgres://admin:s3cretpass@db.internal:5432/app").text).toBe(
+    expect(redact(fake("postgres://admin:", "s3cretpass", "@db.internal:5432/app")).text).toBe(
       "postgres://admin:[REDACTED:url-credentials]@db.internal:5432/app",
     );
   });
@@ -43,7 +47,7 @@ describe("redact", () => {
   });
 
   test("does not double-redact", () => {
-    const result = redact("GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    const result = redact(`GITHUB_TOKEN=${GITHUB_TOKEN}`);
     expect(result.text).toBe("GITHUB_TOKEN=[REDACTED:github-token]");
     expect(result.count).toBe(1);
   });
