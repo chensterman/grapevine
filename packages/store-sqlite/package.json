@@ -1,0 +1,13 @@
+{
+  "name": "@chensterman/grapevine-store-sqlite",
+  "version": "0.1.0",
+  "description": "Local SQLite + FTS5 storage backend for grapevine.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@chensterman/grapevine-core": "workspace:*"
+  }
+}

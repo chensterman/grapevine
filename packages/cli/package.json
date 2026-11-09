@@ -1,0 +1,16 @@
+{
+  "name": "@chensterman/grapevine",
+  "version": "0.1.0",
+  "description": "Passive, path-indexed team memory for coding agents.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "grapevine": "./src/main.ts"
+  },
+  "dependencies": {
+    "@chensterman/grapevine-adapter-claude-code": "workspace:*",
+    "@chensterman/grapevine-core": "workspace:*",
+    "@chensterman/grapevine-mcp": "workspace:*",
+    "@chensterman/grapevine-store-sqlite": "workspace:*"
+  }
+}

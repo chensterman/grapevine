@@ -1,0 +1,13 @@
+{
+  "name": "@chensterman/grapevine-core",
+  "version": "0.1.0",
+  "description": "Record format, redaction, summarization, and ranking for grapevine.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  }
+}

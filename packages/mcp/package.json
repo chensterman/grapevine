@@ -1,0 +1,18 @@
+{
+  "name": "@chensterman/grapevine-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that lets coding agents look up teammates' context with grapevine.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@chensterman/grapevine-core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@chensterman/grapevine-store-sqlite": "workspace:*"
+  }
+}
