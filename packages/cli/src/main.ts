@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { AGENT as CLAUDE_CODE, parseClaudeTranscript, parseHookInput } from "@chensterman/grapevine-adapter-claude-code";
@@ -64,6 +64,17 @@ function openStore(ctx: Context): Store {
 
 function log(message: string): void {
   console.error(`[${new Date().toISOString()}] ${message}`);
+}
+
+function logHookFailure(home: string, error: unknown): void {
+  const line = `[${new Date().toISOString()}] hook failed: ${String(error)}\n`;
+  try {
+    const logDir = join(home, "logs");
+    mkdirSync(logDir, { recursive: true });
+    appendFileSync(join(logDir, "hook.log"), line);
+  } catch {
+    process.stderr.write(line);
+  }
 }
 
 function resolveSummarizer(ctx: Context, override?: string): Summarizer {
@@ -262,6 +273,15 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const home = grapevineHome();
+  if (command === "hook") {
+    // Hooks must never break the agent session, so failures are logged and swallowed.
+    try {
+      await commandHook({ home, config: loadConfig(home) }, args);
+    } catch (error) {
+      logHookFailure(home, error);
+    }
+    return 0;
+  }
   const ctx: Context = { home, config: loadConfig(home) };
   switch (command) {
     case "init":
@@ -272,14 +292,6 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     case "capture":
       await commandCapture(ctx, args);
-      return 0;
-    case "hook":
-      // Hooks must never break the agent session, so failures are logged and swallowed.
-      try {
-        await commandHook(ctx, args);
-      } catch (error) {
-        log(`hook failed: ${String(error)}`);
-      }
       return 0;
     case "search":
       await commandSearch(ctx, args);

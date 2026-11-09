@@ -17,6 +17,9 @@ const BUILTIN_RULES: RedactionRule[] = [
   { name: "anthropic-key", pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
   { name: "openai-key", pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/g },
   { name: "slack-token", pattern: /\bxox[abposr]-[A-Za-z0-9-]{10,}/g },
+  { name: "stripe-key", pattern: /\b[rsp]k_(?:live|test)_[A-Za-z0-9]{16,}/g },
+  { name: "google-api-key", pattern: /\bAIza[0-9A-Za-z_-]{35}/g },
+  { name: "npm-token", pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
   { name: "jwt", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
   { name: "bearer", pattern: new RegExp(`(\\bBearer\\s+)${NOT_REDACTED}[A-Za-z0-9._~+/-]{16,}=*`, "gi"), keepPrefix: true },
   {
@@ -25,9 +28,18 @@ const BUILTIN_RULES: RedactionRule[] = [
     keepPrefix: true,
   },
   {
+    // Dotenv-style `NAME=value` (no spaces) is explicit enough to redact values without digits, like passphrases.
+    name: "env-secret",
+    pattern: new RegExp(
+      `((?:^|(?<=\\s))[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)[A-Z0-9_]*=["']?)${NOT_REDACTED}[^\\s"'\`]{8,}`,
+      "gm",
+    ),
+    keepPrefix: true,
+  },
+  {
     name: "secret-assignment",
     pattern: new RegExp(
-      `(\\b[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_.-]*["']?\\s*[:=]\\s*["']?)${NOT_REDACTED}(?=[^\\s"',;]*\\d)[A-Za-z0-9_\\-+/=.]{12,}`,
+      `(\\b[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_.-]*["']?\\s*[:=]\\s*["']?)${NOT_REDACTED}(?=[^\\s"',;]*\\d)[A-Za-z0-9_\\-+/=.]{6,}`,
       "gi",
     ),
     keepPrefix: true,

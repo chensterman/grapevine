@@ -116,6 +116,15 @@ describe("grapevine CLI", () => {
     expect(lines()).toBe(before);
   }, 30_000);
 
+  test("hook exits 0 and logs to GRAPEVINE_HOME when config is corrupt", () => {
+    const { grapevineHome, run } = sandbox();
+    writeFileSync(join(grapevineHome, "config.json"), "{ broken");
+    const stdin = JSON.stringify({ session_id: "s", transcript_path: "/nope.jsonl" });
+
+    expect(run(["hook", "claude-code"], { stdin }).code).toBe(0);
+    expect(readFileSync(join(grapevineHome, "logs", "hook.log"), "utf8")).toContain("hook failed");
+  });
+
   test("init installs hooks and MCP config idempotently, uninstall removes them", () => {
     const { home, run } = sandbox();
     mkdirSync(join(home, ".claude"));

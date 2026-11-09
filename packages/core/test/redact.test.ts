@@ -9,6 +9,12 @@ describe("redact", () => {
     ["key sk-proj-abcdefghijklmnopqrstuvwxyz", "openai-key"],
     ["xoxb-123456789012-abcdefghij", "slack-token"],
     ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "jwt"],
+    // Split so secret scanners don't flag the fixture.
+    [`key sk_${"live"}_51HxAbCdEfGhIjKlMnOpQrStUv`, "stripe-key"],
+    ["key AIzaSyD-AbCdEfGhIjKlMnOpQrStUvWxYz01234", "google-api-key"],
+    ["token npm_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "npm-token"],
+    ["DB_PASSWORD=correcthorsebatterystaple", "env-secret"],
+    ["password: hunter2", "secret-assignment"],
   ])("redacts %s", (input, rule) => {
     const result = redact(input);
     expect(result.text).toContain(`[REDACTED:${rule}]`);
@@ -21,7 +27,8 @@ describe("redact", () => {
   });
 
   test("keeps the label of assignments, headers, and URLs", () => {
-    expect(redact("DB_PASSWORD=hunter2hunter2x9").text).toBe("DB_PASSWORD=[REDACTED:secret-assignment]");
+    expect(redact("DB_PASSWORD=hunter2hunter2x9").text).toBe("DB_PASSWORD=[REDACTED:env-secret]");
+    expect(redact('apiKey: "a1b2c3d4e5f6"').text).toBe('apiKey: "[REDACTED:secret-assignment]"');
     expect(redact("Authorization: Bearer abcdef0123456789abcdef").text).toBe(
       "Authorization: Bearer [REDACTED:bearer]",
     );
@@ -31,7 +38,7 @@ describe("redact", () => {
   });
 
   test("leaves ordinary code alone", () => {
-    const code = "const tokenCount = countTokens(input); const secretSauce = true; password: string";
+    const code = "const tokenCount = countTokens(input); const secretSauce = true; password: string; MAX_TOKENS=4096; const TOKEN_TYPE = getType()";
     expect(redact(code)).toEqual({ text: code, count: 0 });
   });
 
