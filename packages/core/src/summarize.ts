@@ -40,9 +40,10 @@ Given a coding-agent session transcript with numbered turns, extract only what w
 where Item is {"text": string, "paths": string[], "turns": number[]}.
 
 - task: one sentence describing what the session set out to do.
-- decisions: choices that were made and why. Always include the why.
-- deadEnds: approaches that were tried and failed, and why they failed.
-- openQuestions: unresolved problems, known gaps, and follow-ups.
+- decisions: choices the session made about the code and why. Always include the why. Explaining how existing code works is not a decision.
+- deadEnds: approaches that were actually tried and failed, and why they failed. Risks that were only considered are not dead ends.
+- openQuestions: unresolved problems and known gaps in the code or product. Not to-dos for the session's author, like restarting tools, setting keys, or running tests.
+- Leave out problems with the agent's own environment: sandboxes, permissions, tool errors, and retried commands.
 - status: done if the goal was achieved, abandoned if dropped, paused if explicitly left for later, otherwise in_progress.
 - Item.text: one sentence under 30 words that names concrete files, functions, commands, or services.
 - Item.paths: the files from "Files changed" that the item is about. Empty if none.
