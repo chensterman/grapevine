@@ -278,7 +278,9 @@ describe("grapevine CLI", () => {
 
     expect(run(["hook", "codex"], { stdin }).code).toBe(0);
     await waitForLog(join(grapevineHome, "logs", "capture.log"), "captured");
-    const [record] = JSON.parse(run(["recent", "--json"], { cwd: repo }).stdout) as ContextRecord[];
+    const recent = run(["recent", "--json"], { cwd: repo });
+    expect(recent.stderr).toBe("");
+    const [record] = JSON.parse(recent.stdout) as ContextRecord[];
     expect(record?.agent).toBe("codex");
     expect(record?.sessionKey).toBe("codex:thread-1");
     expect(record?.paths).toContain("src/webhooks/backoff.ts");
