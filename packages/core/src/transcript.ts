@@ -46,12 +46,15 @@ export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
-/** Renders a transcript for summarization, keeping the start (intent) and the end (outcome). */
+/**
+ * Renders a transcript for summarization, keeping the start (intent) and the end (outcome). Turns are
+ * numbered from 1 so summaries can cite them.
+ */
 export function renderTranscript(transcript: Transcript, maxChars = 60_000): string {
   const full = transcript.turns
-    .map((turn) => {
+    .map((turn, index) => {
       const text = turn.role === "tool" ? truncate(turn.text.trim(), TOOL_TURN_LIMIT) : turn.text.trim();
-      return `${turn.role.toUpperCase()}: ${text}`;
+      return `[${index + 1}] ${turn.role.toUpperCase()}: ${text}`;
     })
     .join("\n\n");
   if (full.length <= maxChars) return full;

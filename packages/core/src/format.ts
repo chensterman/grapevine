@@ -1,5 +1,5 @@
 import type { ScoredRecord } from "./store.ts";
-import type { ContextRecord } from "./types.ts";
+import type { ContextRecord, RecordItem } from "./types.ts";
 
 const MAX_LISTED_PATHS = 8;
 
@@ -14,11 +14,24 @@ export function relativeTime(iso: string, now = new Date()): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-function section(title: string, items: string[]): string[] {
-  return items.length ? [`${title}:`, ...items.map((item) => `- ${item}`)] : [];
+export interface FormatOptions {
+  now?: Date;
+  /** Which of a record's paths changed after it was captured. */
+  changedSince?: (record: ContextRecord) => string[];
 }
 
-export function formatRecord(record: ContextRecord, now = new Date()): string {
+function section(title: string, items: RecordItem[], changed: Set<string>): string[] {
+  const line = (item: RecordItem) => {
+    const stale = item.paths.filter((path) => changed.has(path));
+    return stale.length ? `- ${item.text} (changed since: ${stale.join(", ")})` : `- ${item.text}`;
+  };
+  return items.length ? [`${title}:`, ...items.map(line)] : [];
+}
+
+export function formatRecord(record: ContextRecord, options: FormatOptions = {}): string {
+  const now = options.now ?? new Date();
+  const changedPaths = options.changedSince?.(record) ?? [];
+  const changed = new Set(changedPaths);
   const links = [
     record.branch && `branch ${record.branch}`,
     record.pr && `PR ${record.pr}`,
@@ -31,13 +44,16 @@ export function formatRecord(record: ContextRecord, now = new Date()): string {
     `${record.status} · ${record.author} via ${record.agent} · ${relativeTime(record.updatedAt, now)} · ${record.repo}`,
     ...(links.length ? [links.join(" · ")] : []),
     ...(record.paths.length ? [`Paths: ${shown}${more}`] : []),
-    ...section("Decisions", record.decisions),
-    ...section("Dead ends", record.deadEnds),
-    ...section("Open questions", record.openQuestions),
+    ...(changedPaths.length
+      ? [`Changed since this session: ${changedPaths.join(", ")}. Check the current code before relying on notes about them.`]
+      : []),
+    ...section("Decisions", record.decisions, changed),
+    ...section("Dead ends", record.deadEnds, changed),
+    ...section("Open questions", record.openQuestions, changed),
     `id: ${record.id}`,
   ].join("\n");
 }
 
-export function formatResults(results: ScoredRecord[], now = new Date()): string {
-  return results.map((result) => formatRecord(result.record, now)).join("\n\n");
+export function formatResults(results: ScoredRecord[], options: FormatOptions = {}): string {
+  return results.map((result) => formatRecord(result.record, options)).join("\n\n");
 }

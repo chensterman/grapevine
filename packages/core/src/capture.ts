@@ -1,11 +1,12 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import { verifySummary } from "./evidence.ts";
 import { type GitInfo, issueFromBranch, readGitInfo, toRepoRelative } from "./git.ts";
 import { redact } from "./redact.ts";
 import type { Store } from "./store.ts";
 import { heuristicSummarizer, type Summarizer, type Summary } from "./summarize.ts";
 import { renderTranscript, type Transcript } from "./transcript.ts";
-import type { ContextRecord } from "./types.ts";
+import type { ContextRecord, RecordItem } from "./types.ts";
 
 const MAX_PATHS = 200;
 
@@ -76,6 +77,12 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord | 
     summary = await heuristicSummarizer().summarize(input);
   }
 
+  const verified = verifySummary(summary, transcript, git.root, paths);
+  if (verified.dropped > 0) {
+    options.onWarning?.(`Dropped ${verified.dropped} summary item(s) that no transcript turn supports`);
+  }
+  const cleanItems = (items: RecordItem[]) => items.map((item) => ({ ...item, text: clean(item.text) }));
+
   const now = (options.now ?? new Date()).toISOString();
   const record: ContextRecord = {
     id: existing?.id ?? crypto.randomUUID(),
@@ -90,10 +97,11 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord | 
     updatedAt: now,
     task: clean(summary.task) || existing?.task || "Untitled session",
     paths,
-    decisions: summary.decisions.map(clean),
-    deadEnds: summary.deadEnds.map(clean),
-    openQuestions: summary.openQuestions.map(clean),
+    decisions: cleanItems(verified.decisions),
+    deadEnds: cleanItems(verified.deadEnds),
+    openQuestions: cleanItems(verified.openQuestions),
     status: summary.status,
+    commit: git.head ?? existing?.commit,
     transcriptRef: options.transcriptRef,
   };
   await store.upsert(record);

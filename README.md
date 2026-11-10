@@ -35,12 +35,20 @@ A record looks like this:
   "author": "leon@acme.com",
   "agent": "claude-code",
   "paths": ["src/webhooks/retry.ts", "src/webhooks/backoff.ts"],
-  "decisions": ["Capped exponential backoff with jitter, because a fixed 1s delay still overwhelmed the endpoint during incidents."],
-  "deadEnds": ["A fixed 1s delay between retries still overwhelmed the endpoint."],
+  "decisions": [
+    {
+      "text": "Capped exponential backoff with jitter, because a fixed 1s delay still overwhelmed the endpoint during incidents.",
+      "paths": ["src/webhooks/backoff.ts"]
+    }
+  ],
+  "deadEnds": [{ "text": "A fixed 1s delay between retries still overwhelmed the endpoint.", "paths": ["src/webhooks/retry.ts"] }],
   "openQuestions": [],
-  "status": "done"
+  "status": "done",
+  "commit": "3f9c2e1…"
 }
 ```
+
+The model must cite the transcript turns behind each decision, dead end, and open question. Capture drops items whose cited turns don't exist or don't mention them, and keeps only file links to files the session changed. The check catches invented items, not misread ones. When an agent reads a record, grapevine checks which of its files changed in commits after the capture and marks the affected notes "changed since", so the agent checks the current code before trusting them.
 
 ### Sharing a session
 

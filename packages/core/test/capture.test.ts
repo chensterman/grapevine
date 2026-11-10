@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capture } from "../src/capture.ts";
 import type { Store } from "../src/store.ts";
-import { heuristicSummarizer } from "../src/summarize.ts";
+import { heuristicSummarizer, type Summarizer } from "../src/summarize.ts";
 import type { ContextRecord } from "../src/types.ts";
 
 function memoryStore(): Store {
@@ -62,5 +62,46 @@ describe("capture paths", () => {
       const record = await capture({ transcript, agent: "test", store: memoryStore(), summarizer: heuristicSummarizer(), git });
       expect(record?.paths).toEqual([]);
     }
+  });
+});
+
+describe("capture summaries", () => {
+  test("stores verified items with their paths and the HEAD commit, and warns about dropped items", async () => {
+    const root = mkdtempSync(join(tmpdir(), "grapevine-capture-"));
+    const warnings: string[] = [];
+    const summarizer: Summarizer = {
+      name: "fake",
+      async summarize({ rendered }) {
+        expect(rendered).toContain("[2] ASSISTANT: Capped backoff");
+        return {
+          task: "Fix retries",
+          status: "done",
+          decisions: [{ text: "Capped backoff in retry.ts", paths: ["src/retry.ts"], turns: [2] }],
+          deadEnds: [{ text: "Invented approach", paths: [], turns: [] }],
+          openQuestions: [],
+        };
+      },
+    };
+
+    const record = await capture({
+      transcript: {
+        sessionId: "s2",
+        turns: [
+          { role: "user", text: "Fix retries" },
+          { role: "assistant", text: "Capped backoff in src/retry.ts" },
+        ],
+        touchedPaths: [join(root, "src", "retry.ts")],
+      },
+      agent: "test",
+      store: memoryStore(),
+      summarizer,
+      git: { root, repo: "github.com/acme/app", author: "dev@acme.com", changedPaths: [], head: "abc123" },
+      onWarning: (message) => warnings.push(message),
+    });
+
+    expect(record?.decisions).toEqual([{ text: "Capped backoff in retry.ts", paths: ["src/retry.ts"] }]);
+    expect(record?.deadEnds).toEqual([]);
+    expect(record?.commit).toBe("abc123");
+    expect(warnings).toEqual(["Dropped 1 summary item(s) that no transcript turn supports"]);
   });
 });

@@ -9,6 +9,7 @@ import * as codex from "@chensterman/grapevine-adapter-codex";
 import * as cursor from "@chensterman/grapevine-adapter-cursor";
 import {
   capture,
+  changedSinceIn,
   createSummarizer,
   describeSummarizer,
   formatRecord,
@@ -264,7 +265,7 @@ async function commandSearch(ctx: Context, args: string[]): Promise<void> {
   try {
     const results = await store.search({ repo, paths, text: positionals.join(" "), limit: Number(values.limit) });
     if (values.json) console.log(JSON.stringify(results, null, 2));
-    else console.log(results.length ? formatResults(results) : "No matching records.");
+    else console.log(results.length ? formatResults(results, { changedSince: changedSinceIn(identity) }) : "No matching records.");
   } finally {
     store.close();
   }
@@ -280,12 +281,19 @@ async function commandRecent(ctx: Context, args: string[]): Promise<void> {
       json: { type: "boolean", default: false },
     },
   });
-  const { repo } = scopeRepo(process.cwd(), values);
+  const { identity, repo } = scopeRepo(process.cwd(), values);
   const store = openStore(ctx);
   try {
     const records = await store.recent({ repo, limit: Number(values.limit) });
+    const changedSince = changedSinceIn(identity);
     if (values.json) console.log(JSON.stringify(records, null, 2));
-    else console.log(records.length ? records.map((record) => formatRecord(record)).join("\n\n") : "No sessions recorded yet.");
+    else {
+      console.log(
+        records.length
+          ? records.map((record) => formatRecord(record, { changedSince })).join("\n\n")
+          : "No sessions recorded yet.",
+      );
+    }
   } finally {
     store.close();
   }

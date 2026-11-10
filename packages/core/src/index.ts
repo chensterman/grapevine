@@ -1,5 +1,6 @@
 export * from "./capture.ts";
 export * from "./config.ts";
+export * from "./evidence.ts";
 export * from "./format.ts";
 export * from "./git.ts";
 export * from "./rank.ts";

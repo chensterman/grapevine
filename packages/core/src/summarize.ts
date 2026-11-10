@@ -5,11 +5,18 @@ import { RECORD_STATUSES, type RecordStatus } from "./types.ts";
 const MAX_ITEMS = 8;
 const MAX_ITEM_CHARS = 400;
 
+export interface SummaryItem {
+  text: string;
+  paths: string[];
+  /** 1-based numbers of the transcript turns that support the item. */
+  turns: number[];
+}
+
 export interface Summary {
   task: string;
-  decisions: string[];
-  deadEnds: string[];
-  openQuestions: string[];
+  decisions: SummaryItem[];
+  deadEnds: SummaryItem[];
+  openQuestions: SummaryItem[];
   status: RecordStatus;
 }
 
@@ -28,31 +35,47 @@ export interface Summarizer {
 
 export const SYSTEM_PROMPT = `You write handoff notes that teammates' coding agents read before working in the same code.
 
-Given a coding-agent session transcript, extract only what would change another engineer's decisions. Respond with a single JSON object and nothing else:
-{"task": string, "decisions": string[], "deadEnds": string[], "openQuestions": string[], "status": "in_progress" | "done" | "paused" | "abandoned"}
+Given a coding-agent session transcript with numbered turns, extract only what would change another engineer's decisions. Respond with a single JSON object and nothing else:
+{"task": string, "decisions": Item[], "deadEnds": Item[], "openQuestions": Item[], "status": "in_progress" | "done" | "paused" | "abandoned"}
+where Item is {"text": string, "paths": string[], "turns": number[]}.
 
 - task: one sentence describing what the session set out to do.
 - decisions: choices that were made and why. Always include the why.
 - deadEnds: approaches that were tried and failed, and why they failed.
 - openQuestions: unresolved problems, known gaps, and follow-ups.
 - status: done if the goal was achieved, abandoned if dropped, paused if explicitly left for later, otherwise in_progress.
+- Item.text: one sentence under 30 words that names concrete files, functions, commands, or services.
+- Item.paths: the files from "Files changed" that the item is about. Empty if none.
+- Item.turns: the numbers of the turns that state or show the item, e.g. [12, 15]. Items without a supporting turn are discarded.
 
-Only include what the transcript states or clearly shows. Never speculate, suggest improvements, or invent follow-ups: an open question must have been raised or left unresolved in the session. Prefer fewer, sharper items, at most 4 per list. Each item is one sentence under 30 words and names concrete files, functions, commands, or services. Leave out routine steps, chit-chat, and anything that looks like a credential or personal data. Empty arrays are fine.`;
+Only include what the transcript states or clearly shows. Never speculate, suggest improvements, or invent follow-ups: an open question must have been raised or left unresolved in the session. Prefer fewer, sharper items, at most 4 per list. Leave out routine steps, chit-chat, and anything that looks like a credential or personal data. Empty arrays are fine.`;
+
+const ItemSchema = z.union([
+  z.string().transform((text) => ({ text, paths: [], turns: [] })),
+  z.object({
+    text: z.string().catch(""),
+    paths: z.array(z.string()).catch([]),
+    turns: z
+      .array(z.union([z.number(), z.string()]))
+      .catch([])
+      .transform((turns) => turns.map((turn) => Number(String(turn).replace(/^#/, ""))).filter(Number.isInteger)),
+  }),
+]);
 
 const SummarySchema = z.object({
   task: z.string().default(""),
-  decisions: z.array(z.string()).default([]),
-  deadEnds: z.array(z.string()).default([]),
-  openQuestions: z.array(z.string()).default([]),
+  decisions: z.array(ItemSchema).catch([]),
+  deadEnds: z.array(ItemSchema).catch([]),
+  openQuestions: z.array(ItemSchema).catch([]),
   status: z.enum(RECORD_STATUSES as [RecordStatus, ...RecordStatus[]]).catch("in_progress"),
 });
 
-function cleanItems(items: string[]): string[] {
+function cleanItems(items: SummaryItem[]): SummaryItem[] {
   return items
-    .map((item) => item.trim())
-    .filter(Boolean)
+    .map((item) => ({ ...item, text: item.text.trim() }))
+    .filter((item) => item.text)
     .slice(0, MAX_ITEMS)
-    .map((item) => truncate(item, MAX_ITEM_CHARS));
+    .map((item) => ({ ...item, text: truncate(item.text, MAX_ITEM_CHARS) }));
 }
 
 /** Parses a model response, tolerating prose or code fences around the JSON object. */

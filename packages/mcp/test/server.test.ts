@@ -21,7 +21,7 @@ function record(id: string, overrides: Partial<ContextRecord> = {}): ContextReco
     updatedAt: new Date().toISOString(),
     task: `Task ${id}`,
     paths: ["src/webhooks/retry.ts"],
-    decisions: ["Use jitter because retries synchronized"],
+    decisions: [{ text: "Use jitter because retries synchronized", paths: ["src/webhooks/retry.ts"] }],
     deadEnds: [],
     openQuestions: [],
     status: "done",

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { issueFromBranch, normalizeRemote, readGitInfo, toRepoRelative } from "../src/git.ts";
+import { changedSinceRecord, issueFromBranch, normalizeRemote, readGitInfo, toRepoRelative } from "../src/git.ts";
 
 describe("normalizeRemote", () => {
   test.each([
@@ -59,6 +59,29 @@ describe("readGitInfo", () => {
     const info = readGitInfo(dir);
     expect(info.repo).toStartWith("local/grapevine-nogit-");
     expect(info.changedPaths).toEqual([]);
+  });
+});
+
+describe("changedSinceRecord", () => {
+  test("flags record paths changed by commits after the capture", () => {
+    const dir = gitRepo();
+    const run = (date: string, ...args: string[]) =>
+      Bun.spawnSync(["git", ...args], { cwd: dir, env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+    const commitFile = (date: string, file: string) => {
+      writeFileSync(join(dir, file), date);
+      run(date, "add", file);
+      run(date, "commit", "-qm", file);
+    };
+    const at = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString();
+    const captured = readGitInfo(dir).head;
+    commitFile(at(1), "src/committed.ts");
+    commitFile(at(3), "README.md");
+    const record = { paths: ["src/committed.ts", "README.md", "src/new.ts"], updatedAt: at(2) };
+
+    expect(captured).toMatch(/^[0-9a-f]{40}$/);
+    expect(changedSinceRecord(dir, { ...record, commit: captured })).toEqual(["README.md"]);
+    expect(changedSinceRecord(dir, { ...record, commit: "0".repeat(40) })).toEqual(["README.md"]);
+    expect(changedSinceRecord(dir, { ...record, updatedAt: at(4) })).toEqual([]);
   });
 });
 

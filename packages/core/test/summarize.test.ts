@@ -14,8 +14,11 @@ const input: SummaryInput = {
 
 const modelJson = JSON.stringify({
   task: "Add backoff to webhook retries",
-  decisions: ["Used jitter because synchronized retries caused thundering herds", "  "],
-  deadEnds: ["Fixed 1s delay still overwhelmed the endpoint"],
+  decisions: [
+    { text: "Used jitter because synchronized retries caused thundering herds", paths: ["src/retry.ts"], turns: [3] },
+    { text: "  ", paths: [], turns: [1] },
+  ],
+  deadEnds: [{ text: "Fixed 1s delay still overwhelmed the endpoint", turns: ["#2", "x"] }],
   openQuestions: [],
   status: "done",
 });
@@ -24,8 +27,15 @@ describe("parseSummary", () => {
   test("extracts JSON wrapped in prose or code fences", () => {
     const summary = parseSummary(`Here you go:\n\`\`\`json\n${modelJson}\n\`\`\``);
     expect(summary.task).toBe("Add backoff to webhook retries");
-    expect(summary.decisions).toHaveLength(1);
+    expect(summary.decisions).toEqual([
+      { text: "Used jitter because synchronized retries caused thundering herds", paths: ["src/retry.ts"], turns: [3] },
+    ]);
+    expect(summary.deadEnds).toEqual([{ text: "Fixed 1s delay still overwhelmed the endpoint", paths: [], turns: [2] }]);
     expect(summary.status).toBe("done");
+  });
+
+  test("accepts plain-string items, which then have no evidence", () => {
+    expect(parseSummary('{"task":"x","decisions":["Use Y"]}').decisions).toEqual([{ text: "Use Y", paths: [], turns: [] }]);
   });
 
   test("fills defaults and coerces unknown statuses", () => {
@@ -58,7 +68,7 @@ describe("createSummarizer", () => {
     }) as unknown as typeof fetch;
     const summarizer = createSummarizer({ provider: "auto" }, { env: { GRAPEVINE_ANTHROPIC_API_KEY: "k" } }, fakeFetch);
     const summary = await summarizer.summarize(input);
-    expect(summary.deadEnds).toEqual(["Fixed 1s delay still overwhelmed the endpoint"]);
+    expect(summary.deadEnds[0]?.text).toBe("Fixed 1s delay still overwhelmed the endpoint");
     expect(request?.url).toBe("https://api.anthropic.com/v1/messages");
     expect(request?.headers["x-api-key"]).toBe("k");
     expect(request?.body.model).toBe("claude-haiku-4-5");

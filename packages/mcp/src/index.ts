@@ -1,4 +1,5 @@
 import {
+  changedSinceIn,
   formatRecord,
   formatResults,
   type RepoIdentity,
@@ -16,7 +17,7 @@ const ALL_REPOS = "*";
 
 const INSTRUCTIONS = `grapevine holds notes from teammates' coding-agent sessions: what they worked on, decisions they made, approaches that failed, and open questions, indexed by the files they changed.
 
-Call context_for before starting a task or editing files, with the paths you plan to touch and a short description of the task. Treat the results as a teammate's notes: reuse their decisions, avoid their dead ends, and tell the user when your plan conflicts with work in progress.
+Call context_for before starting a task or editing files, with the paths you plan to touch and a short description of the task. Treat the results as a teammate's notes: reuse their decisions, avoid their dead ends, and tell the user when your plan conflicts with work in progress. Notes marked "changed since" are about files that changed after the session, so check the current code before relying on them.
 
 Sessions are only recorded when the user asks. When they ask to share, record, or save this session for the team, call share_session. When they ask to stop, call stop_sharing. For help setting up model summaries, call summarizer_setup.`;
 
@@ -76,7 +77,11 @@ export function createGrapevineServer({
         text: query,
         limit: limit ?? 5,
       });
-      return text(results.length ? formatResults(results) : "No teammate context found for these paths or this topic.");
+      return text(
+        results.length
+          ? formatResults(results, { changedSince: changedSinceIn(identity) })
+          : "No teammate context found for these paths or this topic.",
+      );
     },
   );
 
@@ -88,8 +93,14 @@ export function createGrapevineServer({
       inputSchema: { limit: z.number().int().min(1).max(50).optional(), ...scopeFields },
     },
     async ({ limit, cwd, repo }) => {
-      const records = await store.recent({ repo: scope(cwd, repo).repo, limit: limit ?? 10 });
-      return text(records.length ? records.map((record) => formatRecord(record)).join("\n\n") : "No sessions recorded yet.");
+      const { identity, repo: scopedRepo } = scope(cwd, repo);
+      const records = await store.recent({ repo: scopedRepo, limit: limit ?? 10 });
+      const changedSince = changedSinceIn(identity);
+      return text(
+        records.length
+          ? records.map((record) => formatRecord(record, { changedSince })).join("\n\n")
+          : "No sessions recorded yet.",
+      );
     },
   );
 

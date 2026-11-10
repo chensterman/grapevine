@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { normalizePath } from "./rank.ts";
+import type { ContextRecord } from "./types.ts";
 
 const MAX_CHANGED_PATHS = 200;
 
@@ -16,6 +17,7 @@ export interface GitInfo extends RepoIdentity {
   author: string;
   changedPaths: string[];
   pr?: string;
+  head?: string;
 }
 
 function run(cmd: string, args: string[], cwd: string, timeout = 5000): string | null {
@@ -120,5 +122,24 @@ export function readGitInfo(cwd: string, options: { detectPr?: boolean } = {}): 
     author,
     changedPaths: changedPaths(identity.root),
     pr: pr || undefined,
+    head: git(identity.root, ["rev-parse", "HEAD"]) || undefined,
   };
+}
+
+/**
+ * Which of a record's paths commits on HEAD changed after the record was captured. Counts from the
+ * record's commit when this clone has it, so commits already behind it don't count.
+ */
+export function changedSinceRecord(root: string, record: Pick<ContextRecord, "paths" | "updatedAt" | "commit">): string[] {
+  if (record.paths.length === 0) return [];
+  const known = record.commit && git(root, ["cat-file", "-e", `${record.commit}^{commit}`]) !== null;
+  const range = known ? `${record.commit}..HEAD` : "HEAD";
+  const output = git(root, ["log", range, `--since=${record.updatedAt}`, "--name-only", "--format=", "--", ...record.paths]);
+  const paths = new Set(record.paths);
+  return [...new Set(lines(output))].filter((path) => paths.has(path));
+}
+
+/** `changedSinceRecord` against the local clone, for records from the same repo. */
+export function changedSinceIn(identity: RepoIdentity): (record: ContextRecord) => string[] {
+  return (record) => (record.repo === identity.repo ? changedSinceRecord(identity.root, record) : []);
 }

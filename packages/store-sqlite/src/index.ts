@@ -6,6 +6,7 @@ import {
   type ContextRecord,
   normalizePath,
   type RecentQuery,
+  type RecordItem,
   type RecordStatus,
   rankCandidates,
   type ScoredRecord,
@@ -13,7 +14,7 @@ import {
   type Store,
 } from "@chensterman/grapevine-core";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const CANDIDATE_LIMIT = 200;
 
 const SCHEMA = `
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS records (
   decisions TEXT NOT NULL,
   dead_ends TEXT NOT NULL,
   open_questions TEXT NOT NULL,
-  transcript_ref TEXT
+  transcript_ref TEXT,
+  commit_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS records_repo_updated ON records (repo, updated_at DESC);
 CREATE TABLE IF NOT EXISTS record_paths (
@@ -45,8 +47,16 @@ CREATE INDEX IF NOT EXISTS record_paths_path ON record_paths (path);
 CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5 (
   record_id UNINDEXED, task, decisions, dead_ends, open_questions, paths
 );
-PRAGMA user_version = ${SCHEMA_VERSION};
 `;
+
+/** Items were plain strings before schema version 2. */
+function parseItems(json: string): RecordItem[] {
+  return (JSON.parse(json) as (string | RecordItem)[]).map((item) =>
+    typeof item === "string" ? { text: item, paths: [] } : item,
+  );
+}
+
+const itemText = (items: RecordItem[]) => items.map((item) => item.text).join("\n");
 
 interface RecordRow {
   id: string;
@@ -65,6 +75,7 @@ interface RecordRow {
   dead_ends: string;
   open_questions: string;
   transcript_ref: string | null;
+  commit_sha: string | null;
 }
 
 /** `packages/core/src/a.ts` -> `packages/core`, `src/a.ts` -> `src`, `a.ts` -> `a.ts`. */
@@ -96,15 +107,16 @@ class SqliteStore implements Store {
       this.db
         .query(
           `INSERT INTO records (id, session_key, repo, branch, pr, issue, author, agent, started_at, updated_at,
-             task, status, decisions, dead_ends, open_questions, transcript_ref)
+             task, status, decisions, dead_ends, open_questions, transcript_ref, commit_sha)
            VALUES ($id, $sessionKey, $repo, $branch, $pr, $issue, $author, $agent, $startedAt, $updatedAt,
-             $task, $status, $decisions, $deadEnds, $openQuestions, $transcriptRef)
+             $task, $status, $decisions, $deadEnds, $openQuestions, $transcriptRef, $commit)
            ON CONFLICT (id) DO UPDATE SET
              repo = excluded.repo, branch = excluded.branch, pr = excluded.pr, issue = excluded.issue,
              author = excluded.author, agent = excluded.agent, started_at = excluded.started_at,
              updated_at = excluded.updated_at, task = excluded.task, status = excluded.status,
              decisions = excluded.decisions, dead_ends = excluded.dead_ends,
-             open_questions = excluded.open_questions, transcript_ref = excluded.transcript_ref`,
+             open_questions = excluded.open_questions, transcript_ref = excluded.transcript_ref,
+             commit_sha = excluded.commit_sha`,
         )
         .run({
           id,
@@ -123,6 +135,7 @@ class SqliteStore implements Store {
           deadEnds: JSON.stringify(record.deadEnds),
           openQuestions: JSON.stringify(record.openQuestions),
           transcriptRef: record.transcriptRef ?? null,
+          commit: record.commit ?? null,
         });
 
       this.db.query("DELETE FROM record_paths WHERE record_id = $id").run({ id });
@@ -138,9 +151,9 @@ class SqliteStore implements Store {
         .run({
           id,
           task: record.task,
-          decisions: record.decisions.join("\n"),
-          deadEnds: record.deadEnds.join("\n"),
-          openQuestions: record.openQuestions.join("\n"),
+          decisions: itemText(record.decisions),
+          deadEnds: itemText(record.deadEnds),
+          openQuestions: itemText(record.openQuestions),
           paths: record.paths.join(" "),
         });
     })();
@@ -263,11 +276,12 @@ class SqliteStore implements Store {
       updatedAt: row.updated_at,
       task: row.task,
       paths: pathsById.get(row.id) ?? [],
-      decisions: JSON.parse(row.decisions) as string[],
-      deadEnds: JSON.parse(row.dead_ends) as string[],
-      openQuestions: JSON.parse(row.open_questions) as string[],
+      decisions: parseItems(row.decisions),
+      deadEnds: parseItems(row.dead_ends),
+      openQuestions: parseItems(row.open_questions),
       status: row.status as RecordStatus,
       transcriptRef: row.transcript_ref ?? undefined,
+      commit: row.commit_sha ?? undefined,
     }));
   }
 }
@@ -276,6 +290,11 @@ export function openSqliteStore(path: string): Store {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true, strict: true });
   db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
-  db.exec(SCHEMA);
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+    db.exec(SCHEMA);
+    if (version === 1) db.exec("ALTER TABLE records ADD COLUMN commit_sha TEXT");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }).immediate();
   return new SqliteStore(db);
 }
