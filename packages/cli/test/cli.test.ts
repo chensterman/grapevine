@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { ContextRecord } from "@chensterman/grapevine-core";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,9 @@ import { dirname, join } from "node:path";
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 const FIXTURE = join(import.meta.dir, "..", "..", "adapter-claude-code", "test", "fixtures", "session.jsonl");
 const CURSOR_FIXTURE = join(import.meta.dir, "..", "..", "adapter-cursor", "test", "fixtures", "session.jsonl");
+
+// Every test spawns the CLI, and cold starts on CI runners can exceed the 5s default.
+setDefaultTimeout(30_000);
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `grapevine-${prefix}-`));
@@ -115,7 +118,7 @@ describe("grapevine CLI", () => {
     run(["hook", "claude-code"], { stdin: payload("Stop") });
     await Bun.sleep(1500);
     expect(lines()).toBe(before);
-  }, 30_000);
+  });
 
   test("cursor hook captures using the workspace root", async () => {
     const { grapevineHome, run } = sandbox();
@@ -143,7 +146,7 @@ describe("grapevine CLI", () => {
     expect(record?.repo).toBe("github.com/acme/app");
     expect(record?.paths.sort()).toEqual(["src/webhooks/backoff.ts", "src/webhooks/retry.ts"]);
     expect(record?.task).toBe("Fix the webhook retry loop in src/webhooks/retry.ts so it backs off exponentially.");
-  }, 30_000);
+  });
 
   test("hook exits 0 and logs to GRAPEVINE_HOME when config is corrupt", () => {
     const { grapevineHome, run } = sandbox();
