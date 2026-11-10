@@ -107,8 +107,10 @@ export function install(options: InstallOptions): void {
     const hooksPath = codexHooksPath();
     const hookCommand = shellCommand([...options.self, "hook", codexHooks.AGENT]);
     const result = codexHooks.installHooks(readJson<codexHooks.CodexHooksFile>(hooksPath, {}), hookCommand);
-    if (result.changed) write(hooksPath, result.file, "Stop and SessionEnd capture hooks");
-    else log(`Codex hooks already installed in ${hooksPath}`);
+    if (result.changed) {
+      write(hooksPath, result.file, "Stop and SessionEnd capture hooks");
+      log("Codex skips new hooks until you trust them: review and trust grapevine's hooks in Codex before sharing a session.");
+    } else log(`Codex hooks already installed in ${hooksPath}`);
 
     const mcpCommand = [...options.self, "mcp"];
     if (dryRun) log(`would register MCP server with Codex: ${shellCommand(mcpCommand)}`);

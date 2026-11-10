@@ -256,6 +256,7 @@ describe("grapevine CLI", () => {
     expect(codexHooks.hooks.Stop).toHaveLength(2);
     expect(codexHooks.hooks.SessionEnd[0].hooks[0].command).toContain("hook codex");
     expect(first.stdout).toContain("codex CLI not found; register manually with: codex mcp add grapevine --");
+    expect(first.stdout).toContain("trust grapevine's hooks in Codex");
 
     const second = run(["init"]).stdout;
     expect(second).toContain("Cursor hooks already installed");

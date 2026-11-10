@@ -72,6 +72,8 @@ Hooks and MCP config point at the absolute path of this checkout, so they keep w
 - registers the MCP server with Codex (`codex mcp add grapevine ...`)
 - writes `~/.grapevine/config.json`
 
+Codex runs new hooks only after you trust them, and skips untrusted ones without a warning, so review and trust grapevine's hooks in Codex after `init`.
+
 It backs up each file it changes to `<file>.grapevine-backup`. Use `--dry-run` to preview, and `grapevine uninstall` to undo. Then add the printed snippet to your `AGENTS.md` or `CLAUDE.md` so agents call `context_for` before editing.
 
 ### Model summaries
