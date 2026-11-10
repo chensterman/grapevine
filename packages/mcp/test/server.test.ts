@@ -38,7 +38,9 @@ async function connect(): Promise<Client> {
   await store.upsert(record("b", { author: "pat@acme.com", paths: ["src/webhooks/backoff.ts"] }));
   await store.upsert(record("c", { repo: "github.com/acme/other", task: "Elsewhere" }));
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await createGrapevineServer({ store, defaultCwd: cwd }).connect(serverTransport);
+  await createGrapevineServer({ store, defaultCwd: cwd, summarizerStatus: () => "Summarizer: test" }).connect(
+    serverTransport,
+  );
   const client = new Client({ name: "test", version: "0.0.0" });
   await client.connect(clientTransport);
   return client;
@@ -52,8 +54,25 @@ describe("grapevine MCP server", () => {
   test("lists its tools and instructions", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(["context_for", "recent_work", "who_touches"]);
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "context_for",
+      "recent_work",
+      "share_session",
+      "stop_sharing",
+      "summarizer_setup",
+      "who_touches",
+    ]);
     expect(client.getInstructions()).toContain("context_for");
+    expect(client.getInstructions()).toContain("share_session");
+  });
+
+  test("share_session confirms and reports the summarizer; summarizer_setup returns setup help", async () => {
+    const client = await connect();
+    const shared = textOf(await client.callTool({ name: "share_session", arguments: {} }));
+    expect(shared).toContain("marked for sharing");
+    expect(shared).toContain("Summarizer: test");
+    expect(textOf(await client.callTool({ name: "summarizer_setup", arguments: {} }))).toBe("Summarizer: test");
+    expect(textOf(await client.callTool({ name: "stop_sharing", arguments: {} }))).toContain("Sharing is off");
   });
 
   test("context_for scopes to the caller's repo and accepts absolute paths", async () => {

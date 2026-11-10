@@ -1,6 +1,6 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { ContextRecord } from "@chensterman/grapevine-core";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -27,6 +27,8 @@ function sandbox() {
     GRAPEVINE_HOME: grapevineHome,
     ANTHROPIC_API_KEY: "",
     OPENAI_API_KEY: "",
+    GRAPEVINE_ANTHROPIC_API_KEY: "",
+    GRAPEVINE_OPENAI_API_KEY: "",
     PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
   };
   const run = (args: string[], options: { cwd?: string; stdin?: string } = {}) => {
@@ -38,6 +40,13 @@ function sandbox() {
     return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
   };
   return { home, grapevineHome, run };
+}
+
+async function waitForLog(path: string, needle: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline && !(existsSync(path) && readFileSync(path, "utf8").includes(needle))) {
+    await Bun.sleep(100);
+  }
 }
 
 /** A git repo on a feature branch plus a Claude Code transcript whose paths point into it. */
@@ -146,6 +155,65 @@ describe("grapevine CLI", () => {
     expect(record?.repo).toBe("github.com/acme/app");
     expect(record?.paths.sort()).toEqual(["src/webhooks/backoff.ts", "src/webhooks/retry.ts"]);
     expect(record?.task).toBe("Fix the webhook retry loop in src/webhooks/retry.ts so it backs off exponentially.");
+  });
+
+  test("hook ignores sessions that were never shared, unless capture mode is always", async () => {
+    const { grapevineHome, run } = sandbox();
+    const { repo, transcript } = repoWithTranscript();
+    const unshared = readFileSync(transcript, "utf8")
+      .split("\n")
+      .map((line) => line.replace(/\{"type":"tool_use","id":"t0","name":"mcp__grapevine__share_session","input":\{\}\},/, ""))
+      .join("\n");
+    writeFileSync(transcript, unshared);
+    const stdin = JSON.stringify({ session_id: "sess-123", transcript_path: transcript, cwd: repo, hook_event_name: "SessionEnd" });
+    const logPath = join(grapevineHome, "logs", "capture.log");
+
+    expect(run(["hook", "claude-code"], { stdin }).code).toBe(0);
+    await Bun.sleep(1500);
+    expect(existsSync(logPath) && readFileSync(logPath, "utf8").includes("captured")).toBe(false);
+
+    writeFileSync(join(grapevineHome, "config.json"), JSON.stringify({ capture: { detectPr: false, mode: "always" } }));
+    run(["hook", "claude-code"], { stdin });
+    await waitForLog(logPath, "captured");
+    expect(readFileSync(logPath, "utf8")).toContain("with heuristic");
+  });
+
+  test("stop_sharing deletes the session's record", async () => {
+    const { grapevineHome, run } = sandbox();
+    const { repo, transcript } = repoWithTranscript();
+    const payload = (event: string) =>
+      JSON.stringify({ session_id: "sess-123", transcript_path: transcript, cwd: repo, hook_event_name: event });
+
+    run(["hook", "claude-code"], { stdin: payload("SessionEnd") });
+    await waitForLog(join(grapevineHome, "logs", "capture.log"), "captured");
+    expect(JSON.parse(run(["recent", "--json"], { cwd: repo }).stdout)).toHaveLength(1);
+
+    const stop = {
+      type: "assistant",
+      sessionId: "sess-123",
+      message: { role: "assistant", content: [{ type: "tool_use", id: "t9", name: "mcp__grapevine__stop_sharing", input: {} }] },
+    };
+    writeFileSync(transcript, `${readFileSync(transcript, "utf8")}\n${JSON.stringify(stop)}\n`);
+    expect(run(["hook", "claude-code"], { stdin: payload("Stop") }).code).toBe(0);
+    expect(JSON.parse(run(["recent", "--json"], { cwd: repo }).stdout)).toEqual([]);
+  });
+
+  test("key set reads a key from stdin; status reports its source but never the key", () => {
+    const { grapevineHome, run } = sandbox();
+    expect(run(["status"]).stdout).toContain("Capture: opt-in");
+    expect(run(["status"]).stdout).toContain("Summarizer: heuristic");
+
+    const saved = run(["key", "set", "openai"], { stdin: "not-a-real-key\n" });
+    expect(saved.code).toBe(0);
+    expect(saved.stdout + saved.stderr).not.toContain("not-a-real-key");
+    expect(statSync(join(grapevineHome, "credentials.json")).mode & 0o777).toBe(0o600);
+
+    const status = run(["status"]).stdout;
+    expect(status).toContain("openai-compatible (gpt-5-mini), key from saved openai key");
+    expect(status).not.toContain("not-a-real-key");
+
+    expect(run(["key", "remove", "openai"]).code).toBe(0);
+    expect(run(["status"]).stdout).toContain("Summarizer: heuristic");
   });
 
   test("hook exits 0 and logs to GRAPEVINE_HOME when config is corrupt", () => {

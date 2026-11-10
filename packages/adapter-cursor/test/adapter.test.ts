@@ -31,11 +31,13 @@ describe("parseCursorTranscript", () => {
 
   test("collects edited paths but not read-only ones", () => {
     expect(transcript.touchedPaths).toEqual(["/work/app/src/webhooks/retry.ts", "/work/app/src/webhooks/backoff.ts"]);
+    expect(transcript.ranCommands).toBe(true);
   });
 
   test("turns tool calls into short tool turns", () => {
     const tools = transcript.turns.filter((turn) => turn.role === "tool").map((turn) => turn.text);
     expect(tools).toEqual([
+      "CallDynamicTool(share_session)",
       "Read(/work/app/src/webhooks/retry.ts)",
       "StrReplace(/work/app/src/webhooks/retry.ts)",
       "Write(/work/app/src/webhooks/backoff.ts)",
@@ -43,8 +45,18 @@ describe("parseCursorTranscript", () => {
     ]);
   });
 
+  test("detects grapevine share requests made through Cursor's MCP tool", () => {
+    expect(transcript.shareRequest).toBe("share");
+    const stopped = `${fixture}\n${JSON.stringify({
+      role: "assistant",
+      message: { content: [{ type: "tool_use", name: "CallDynamicTool", input: { namespace: "user-grapevine", toolName: "stop_sharing" } }] },
+    })}`;
+    expect(parseCursorTranscript(stopped).shareRequest).toBe("stop");
+  });
+
   test("tolerates empty input", () => {
     expect(parseCursorTranscript("", "fallback")).toMatchObject({ sessionId: "fallback", turns: [] });
+    expect(parseCursorTranscript("", "fallback").shareRequest).toBeUndefined();
   });
 });
 

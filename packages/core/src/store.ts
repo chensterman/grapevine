@@ -27,6 +27,8 @@ export interface Store {
   upsert(record: ContextRecord): Promise<void>;
   get(id: string): Promise<ContextRecord | null>;
   getBySession(sessionKey: string): Promise<ContextRecord | null>;
+  /** Removes the record for a session. Returns whether one existed. */
+  deleteBySession(sessionKey: string): Promise<boolean>;
   search(query: SearchQuery): Promise<ScoredRecord[]>;
   recent(query: RecentQuery): Promise<ContextRecord[]>;
   close(): void;

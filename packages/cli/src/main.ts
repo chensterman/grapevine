@@ -9,13 +9,20 @@ import * as cursor from "@chensterman/grapevine-adapter-cursor";
 import {
   capture,
   createSummarizer,
+  describeSummarizer,
   formatRecord,
   formatResults,
   type GrapevineConfig,
   grapevineHome,
   heuristicSummarizer,
+  KEY_ENV,
+  type KeyProvider,
+  type KeySources,
   loadConfig,
+  loadCredentials,
   readRepoIdentity,
+  resolveSummarizer,
+  saveCredential,
   type Store,
   type Summarizer,
   type SummarizerProvider,
@@ -41,16 +48,20 @@ Usage:
   grapevine recent [--repo <id> | --all-repos] [-n <limit>] [--json]
       List the most recent sessions.
   grapevine capture --transcript <file> [--agent claude-code|cursor] [--cwd <dir>] [--summarizer <provider>] [--json]
-      Summarize and store one session now.
+      Summarize and store one session now, whether or not it was shared in-session.
+  grapevine status
+      Show the capture mode and which summarizer captures will use.
+  grapevine key set|remove anthropic|openai
+      Save a model API key for grapevine only (read from a hidden prompt or stdin), or remove it.
   grapevine hook claude-code|cursor
-      Agent hook entry point. Reads hook JSON on stdin and captures in the background.
+      Agent hook entry point. Reads hook JSON on stdin and captures shared sessions in the background.
   grapevine mcp
       Run the MCP server on stdio.
 
 Environment:
-  GRAPEVINE_HOME      Config, database, and logs (default ~/.grapevine)
-  ANTHROPIC_API_KEY   Enables the Anthropic summarizer when provider is "auto"
-  OPENAI_API_KEY      Enables the OpenAI-compatible summarizer when provider is "auto"
+  GRAPEVINE_HOME                Config, database, logs, and saved keys (default ~/.grapevine)
+  GRAPEVINE_ANTHROPIC_API_KEY   Enables the Anthropic summarizer when provider is "auto"
+  GRAPEVINE_OPENAI_API_KEY      Enables the OpenAI-compatible summarizer when provider is "auto"
 `;
 
 const PROVIDERS: SummarizerProvider[] = ["auto", "anthropic", "openai-compatible", "heuristic"];
@@ -111,13 +122,21 @@ function logHookFailure(home: string, error: unknown): void {
   }
 }
 
-function resolveSummarizer(ctx: Context, override?: string): Summarizer {
+function keySources(ctx: Context): KeySources {
+  return { env: process.env, credentials: loadCredentials(ctx.home) };
+}
+
+function summarizerStatus(ctx: Context): string {
+  return describeSummarizer(resolveSummarizer(ctx.config.summarizer, keySources(ctx)), ctx.home);
+}
+
+function summarizerFor(ctx: Context, override?: string): Summarizer {
   if (override && !PROVIDERS.includes(override as SummarizerProvider)) {
     throw new Error(`Unknown summarizer "${override}". Use one of: ${PROVIDERS.join(", ")}`);
   }
   const config = override ? { ...ctx.config.summarizer, provider: override as SummarizerProvider } : ctx.config.summarizer;
   try {
-    return createSummarizer(config);
+    return createSummarizer(config, keySources(ctx));
   } catch (error) {
     log(`${(error as Error).message}; falling back to heuristic summaries`);
     return heuristicSummarizer();
@@ -145,13 +164,14 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
 
   const transcriptPath = resolve(values.transcript);
   const transcript = agent.parseTranscript(readFileSync(transcriptPath, "utf8"), basename(transcriptPath, ".jsonl"));
+  const summarizer = summarizerFor(ctx, values.summarizer);
   const store = openStore(ctx);
   try {
     const record = await capture({
       transcript,
       agent: values.agent,
       store,
-      summarizer: resolveSummarizer(ctx, values.summarizer),
+      summarizer,
       cwd: values.cwd ?? transcript.cwd,
       redactPatterns: ctx.config.redact.patterns,
       transcriptRef: transcriptPath,
@@ -164,7 +184,7 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
       return;
     }
     if (values.json) console.log(JSON.stringify(record, null, 2));
-    else log(`captured ${record.id} in ${record.repo}: ${record.task}`);
+    else log(`captured ${record.id} in ${record.repo} with ${summarizer.name}: ${record.task}`);
   } finally {
     store.close();
   }
@@ -182,12 +202,30 @@ async function commandHook(ctx: Context, args: string[]): Promise<void> {
   mkdirSync(logDir, { recursive: true });
   const key = createHash("sha256").update(`${agentId}:${input.session_id}`).digest("hex").slice(0, 24);
   const stateFile = join(stateDir, `${key}.json`);
-  const lastCaptureAt = existsSync(stateFile)
-    ? ((JSON.parse(readFileSync(stateFile, "utf8")) as { lastCaptureAt?: number }).lastCaptureAt ?? 0)
-    : 0;
+  const state = existsSync(stateFile)
+    ? (JSON.parse(readFileSync(stateFile, "utf8")) as { lastCaptureAt?: number; shared?: boolean })
+    : {};
+
+  // The agent opts a session in or out by calling share_session / stop_sharing; the latest call wins.
+  const { shareRequest, sessionId } = agent.parseTranscript(readFileSync(input.transcript_path, "utf8"), input.session_id);
+  if (shareRequest === "stop") {
+    if (state.shared !== false) {
+      const store = openStore(ctx);
+      try {
+        await store.deleteBySession(`${agentId}:${sessionId}`);
+      } finally {
+        store.close();
+      }
+      writeFileSync(stateFile, JSON.stringify({ shared: false }));
+    }
+    return;
+  }
+  if (ctx.config.capture.mode !== "always" && shareRequest !== "share") return;
+
   const isSessionEnd = input.hook_event_name === agent.sessionEndEvent;
+  const lastCaptureAt = state.lastCaptureAt ?? 0;
   if (!isSessionEnd && Date.now() - lastCaptureAt < ctx.config.capture.minIntervalMinutes * 60_000) return;
-  writeFileSync(stateFile, JSON.stringify({ lastCaptureAt: Date.now() }));
+  writeFileSync(stateFile, JSON.stringify({ lastCaptureAt: Date.now(), shared: true }));
 
   const [command, ...prefix] = selfCommand();
   const out = openSync(join(logDir, "capture.log"), "a");
@@ -245,6 +283,47 @@ async function commandRecent(ctx: Context, args: string[]): Promise<void> {
   } finally {
     store.close();
   }
+}
+
+function commandStatus(ctx: Context): void {
+  const { mode } = ctx.config.capture;
+  console.log(
+    mode === "always"
+      ? "Capture: always (every session is summarized)."
+      : "Capture: opt-in (only sessions where the user asks the agent to share them).",
+  );
+  console.log(summarizerStatus(ctx));
+}
+
+/** Reads a secret from a hidden terminal prompt, or from stdin when piped. */
+async function readSecret(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) return (await Bun.stdin.text()).trim();
+  process.stderr.write(prompt);
+  spawnSync("stty", ["-echo"], { stdio: "inherit" });
+  try {
+    for await (const line of console) return line.trim();
+    return "";
+  } finally {
+    spawnSync("stty", ["echo"], { stdio: "inherit" });
+    process.stderr.write("\n");
+  }
+}
+
+async function commandKey(ctx: Context, args: string[]): Promise<void> {
+  const [action, provider] = args;
+  if ((action !== "set" && action !== "remove") || (provider !== "anthropic" && provider !== "openai")) {
+    throw new Error("Usage: grapevine key set|remove anthropic|openai");
+  }
+  if (action === "remove") {
+    saveCredential(ctx.home, provider, undefined);
+    console.log(`Removed the saved ${provider} key.`);
+    return;
+  }
+  const key = await readSecret(`Paste your ${provider} API key for grapevine (input is hidden): `);
+  if (!key) throw new Error("No key entered.");
+  saveCredential(ctx.home, provider as KeyProvider, key);
+  console.log(`Saved the ${provider} key for grapevine ($${KEY_ENV[provider]} takes precedence if set).`);
+  console.log(summarizerStatus(ctx));
 }
 
 function agentFlags(args: string[]) {
@@ -334,8 +413,17 @@ export async function main(argv: string[]): Promise<number> {
     case "recent":
       await commandRecent(ctx, args);
       return 0;
+    case "status":
+      commandStatus(ctx);
+      return 0;
+    case "key":
+      await commandKey(ctx, args);
+      return 0;
     case "mcp":
-      await runStdioServer({ store: openStore(ctx) });
+      await runStdioServer({
+        store: openStore(ctx),
+        summarizerStatus: () => summarizerStatus({ home, config: loadConfig(home) }),
+      });
       return 0;
     default:
       console.error(`Unknown command "${command}".\n\n${USAGE}`);

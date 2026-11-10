@@ -24,12 +24,18 @@ describe("parseClaudeTranscript", () => {
 
   test("collects edited paths but not read-only ones", () => {
     expect(transcript.touchedPaths).toEqual(["/work/app/src/webhooks/retry.ts", "/work/app/src/webhooks/backoff.ts"]);
+    expect(transcript.ranCommands).toBe(false);
   });
 
   test("turns tool calls and results into short tool turns", () => {
     const tools = transcript.turns.filter((turn) => turn.role === "tool").map((turn) => turn.text);
     expect(tools).toContain("Read(/work/app/src/webhooks/retry.ts)");
     expect(tools).toContain("result: The file has been updated.");
+  });
+
+  test("detects grapevine share requests", () => {
+    expect(transcript.shareRequest).toBe("share");
+    expect(parseClaudeTranscript("").shareRequest).toBeUndefined();
   });
 
   test("tolerates malformed lines", () => {

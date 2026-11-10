@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { type GitInfo, issueFromBranch, readGitInfo, toRepoRelative } from "./git.ts";
 import { redact } from "./redact.ts";
 import type { Store } from "./store.ts";
@@ -27,6 +29,22 @@ function repoRelativePaths(root: string, paths: string[]): string[] {
   return paths.map((path) => toRepoRelative(root, path)).filter((path): path is string => path !== null);
 }
 
+/**
+ * Git-changed files modified since the session started, for sessions that ran shell commands. The
+ * working tree also holds other sessions' and earlier uncommitted work, which this can't fully exclude.
+ */
+function changedDuringSession(root: string, paths: string[], startedAt: string | undefined): string[] {
+  const since = startedAt ? Date.parse(startedAt) : Number.NaN;
+  if (Number.isNaN(since)) return [];
+  return paths.filter((path) => {
+    try {
+      return statSync(join(root, path)).mtimeMs >= since;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Redacts, summarizes, and stores one session. Returns null when the session has no user input. */
 export async function capture(options: CaptureOptions): Promise<ContextRecord | null> {
   const { transcript: raw, store, agent } = options;
@@ -41,7 +59,11 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord | 
   const sessionKey = `${agent}:${raw.sessionId}`;
   const existing = await store.getBySession(sessionKey);
   const paths = [
-    ...new Set([...repoRelativePaths(git.root, raw.touchedPaths), ...git.changedPaths, ...(existing?.paths ?? [])]),
+    ...new Set([
+      ...repoRelativePaths(git.root, raw.touchedPaths),
+      ...(raw.ranCommands ? changedDuringSession(git.root, git.changedPaths, existing?.startedAt ?? raw.startedAt) : []),
+      ...(existing?.paths ?? []),
+    ]),
   ].slice(0, MAX_PATHS);
   const branch = git.branch ?? raw.branch;
   const input = { transcript, rendered: renderTranscript(transcript), paths, branch };

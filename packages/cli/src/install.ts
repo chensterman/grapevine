@@ -8,7 +8,9 @@ import { shellCommand } from "./self.ts";
 
 export const RULES_SNIPPET = `## Team context (grapevine)
 
-Before starting a task or editing files, call the grapevine \`context_for\` tool with the files you plan to touch and a one-line description of the task. Reuse teammates' decisions, avoid their dead ends, and tell the user when your plan conflicts with work in progress.`;
+Before starting a task or editing files, call the grapevine \`context_for\` tool with the files you plan to touch and a one-line description of the task. Reuse teammates' decisions, avoid their dead ends, and tell the user when your plan conflicts with work in progress.
+
+Sessions are recorded only when the user asks. When they ask to share or record this session, call \`share_session\`; when they ask to stop, call \`stop_sharing\`.`;
 
 export interface InstallOptions {
   home: string;

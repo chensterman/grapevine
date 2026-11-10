@@ -38,6 +38,16 @@ describe("SqliteStore", () => {
     expect(await store.recent({})).toHaveLength(1);
   });
 
+  test("deletes a session's record from every index", async () => {
+    store = openSqliteStore(":memory:");
+    await store.upsert(record({ id: "a", task: "Retry backoff", paths: ["src/retry.ts"] }));
+    expect(await store.deleteBySession("test:a")).toBe(true);
+    expect(await store.deleteBySession("test:a")).toBe(false);
+    expect(await store.recent({})).toEqual([]);
+    expect(await store.search({ paths: ["src/retry.ts"] })).toEqual([]);
+    expect(await store.search({ text: "backoff" })).toEqual([]);
+  });
+
   test("searches by path proximity within a repo", async () => {
     store = openSqliteStore(":memory:");
     await store.upsert(record({ id: "exact", paths: ["src/webhooks/retry.ts"] }));

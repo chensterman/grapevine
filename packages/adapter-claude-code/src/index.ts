@@ -1,4 +1,10 @@
-import { type Transcript, type TranscriptTurn, truncate } from "@chensterman/grapevine-core";
+import {
+  type ShareRequest,
+  shareRequestFromToolCall,
+  type Transcript,
+  type TranscriptTurn,
+  truncate,
+} from "@chensterman/grapevine-core";
 
 export const AGENT = "claude-code";
 
@@ -58,6 +64,8 @@ export function parseClaudeTranscript(jsonl: string, fallbackSessionId = "unknow
   let branch: string | undefined;
   let startedAt: string | undefined;
   let endedAt: string | undefined;
+  let shareRequest: ShareRequest | undefined;
+  let ranCommands = false;
 
   for (const raw of jsonl.split("\n")) {
     if (!raw.trim()) continue;
@@ -93,6 +101,8 @@ export function parseClaudeTranscript(jsonl: string, fallbackSessionId = "unknow
         const pathKey = EDIT_TOOLS[block.name];
         const path = pathKey ? input[pathKey] : undefined;
         if (typeof path === "string") touched.add(path);
+        if (block.name === "Bash") ranCommands = true;
+        shareRequest = shareRequestFromToolCall(block.name, input) ?? shareRequest;
       } else if (block.type === "tool_result") {
         const text = toolResultText(block.content);
         if (text.trim()) turns.push({ role: "tool", text: `result: ${text}` });
@@ -108,6 +118,8 @@ export function parseClaudeTranscript(jsonl: string, fallbackSessionId = "unknow
     endedAt,
     turns,
     touchedPaths: [...touched],
+    ranCommands,
+    shareRequest,
   };
 }
 

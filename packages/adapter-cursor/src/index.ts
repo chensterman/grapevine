@@ -1,4 +1,10 @@
-import { type Transcript, type TranscriptTurn, truncate } from "@chensterman/grapevine-core";
+import {
+  type ShareRequest,
+  shareRequestFromToolCall,
+  type Transcript,
+  type TranscriptTurn,
+  truncate,
+} from "@chensterman/grapevine-core";
 
 export const AGENT = "cursor";
 
@@ -10,7 +16,19 @@ const EDIT_TOOLS: Record<string, string> = {
   EditNotebook: "target_notebook",
 };
 
-const DESCRIBE_KEYS = ["path", "target_notebook", "command", "pattern", "glob_pattern", "query", "search_term", "url"];
+const SHELL_TOOLS = new Set(["Shell", "run_terminal_cmd"]);
+
+const DESCRIBE_KEYS = [
+  "path",
+  "target_notebook",
+  "command",
+  "pattern",
+  "glob_pattern",
+  "query",
+  "search_term",
+  "url",
+  "toolName",
+];
 
 interface ContentBlock {
   type: string;
@@ -58,6 +76,8 @@ export function parseCursorTranscript(jsonl: string, sessionId = "unknown"): Tra
   const touched = new Set<string>();
   let startedAt: string | undefined;
   let endedAt: string | undefined;
+  let shareRequest: ShareRequest | undefined;
+  let ranCommands = false;
 
   for (const raw of jsonl.split("\n")) {
     if (!raw.trim()) continue;
@@ -91,11 +111,13 @@ export function parseCursorTranscript(jsonl: string, sessionId = "unknown"): Tra
         const pathKey = EDIT_TOOLS[block.name];
         const path = pathKey ? input[pathKey] : undefined;
         if (typeof path === "string") touched.add(path);
+        if (SHELL_TOOLS.has(block.name)) ranCommands = true;
+        shareRequest = shareRequestFromToolCall(block.name, input) ?? shareRequest;
       }
     }
   }
 
-  return { sessionId, startedAt, endedAt, turns, touchedPaths: [...touched] };
+  return { sessionId, startedAt, endedAt, turns, touchedPaths: [...touched], ranCommands, shareRequest };
 }
 
 export interface CursorHookInput {

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createSummarizer } from "../src/config.ts";
+import { mkdtempSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSummarizer, describeSummarizer, loadCredentials, resolveSummarizer, saveCredential } from "../src/config.ts";
 import { parseSummary, type SummaryInput } from "../src/summarize.ts";
 
 const input: SummaryInput = {
@@ -42,7 +45,7 @@ describe("parseSummary", () => {
 
 describe("createSummarizer", () => {
   test("auto picks heuristic without API keys", async () => {
-    const summarizer = createSummarizer({ provider: "auto" }, {});
+    const summarizer = createSummarizer({ provider: "auto" }, { env: {} });
     expect(summarizer.name).toBe("heuristic");
     expect((await summarizer.summarize(input)).task).toBe("Fix retries");
   });
@@ -53,7 +56,7 @@ describe("createSummarizer", () => {
       request = { url, headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) };
       return Response.json({ content: [{ type: "text", text: modelJson }] });
     }) as unknown as typeof fetch;
-    const summarizer = createSummarizer({ provider: "auto" }, { ANTHROPIC_API_KEY: "k" }, fakeFetch);
+    const summarizer = createSummarizer({ provider: "auto" }, { env: { GRAPEVINE_ANTHROPIC_API_KEY: "k" } }, fakeFetch);
     const summary = await summarizer.summarize(input);
     expect(summary.deadEnds).toEqual(["Fixed 1s delay still overwhelmed the endpoint"]);
     expect(request?.url).toBe("https://api.anthropic.com/v1/messages");
@@ -69,7 +72,7 @@ describe("createSummarizer", () => {
     }) as unknown as typeof fetch;
     const summarizer = createSummarizer(
       { provider: "auto", apiKeyEnv: "OLLAMA_KEY", baseUrl: "http://localhost:11434/v1", model: "qwen3" },
-      { OLLAMA_KEY: "local" },
+      { env: { OLLAMA_KEY: "local" } },
       fakeFetch,
     );
     expect(summarizer.name).toBe("openai-compatible:qwen3");
@@ -79,11 +82,53 @@ describe("createSummarizer", () => {
 
   test("surfaces API errors", async () => {
     const fakeFetch = (async () => new Response("rate limited", { status: 429 })) as unknown as typeof fetch;
-    const summarizer = createSummarizer({ provider: "anthropic" }, { ANTHROPIC_API_KEY: "k" }, fakeFetch);
+    const summarizer = createSummarizer({ provider: "anthropic" }, { env: { GRAPEVINE_ANTHROPIC_API_KEY: "k" } }, fakeFetch);
     expect(summarizer.summarize(input)).rejects.toThrow("429");
   });
 
   test("explicit providers require a key", () => {
-    expect(() => createSummarizer({ provider: "anthropic" }, {})).toThrow("ANTHROPIC_API_KEY");
+    expect(() => createSummarizer({ provider: "anthropic" }, { env: {} })).toThrow("GRAPEVINE_ANTHROPIC_API_KEY");
+  });
+});
+
+describe("summarizer opt-in", () => {
+  test("auto ignores generic key names that other tools export", () => {
+    const env = { OPENAI_API_KEY: "other-tool", ANTHROPIC_API_KEY: "other-tool" };
+    expect(resolveSummarizer({ provider: "auto" }, { env }).provider).toBe("heuristic");
+  });
+
+  test("auto uses a saved key, and grapevine's env var takes precedence", () => {
+    const saved = resolveSummarizer({ provider: "auto" }, { env: {}, credentials: { openai: "saved" } });
+    expect(saved).toMatchObject({ provider: "openai-compatible", apiKey: "saved", keySource: "saved openai key" });
+    const env = resolveSummarizer(
+      { provider: "auto" },
+      { env: { GRAPEVINE_OPENAI_API_KEY: "env" }, credentials: { openai: "saved" } },
+    );
+    expect(env).toMatchObject({ apiKey: "env", keySource: "$GRAPEVINE_OPENAI_API_KEY" });
+  });
+
+  test("describes status and setup steps without revealing keys", () => {
+    const heuristic = describeSummarizer(resolveSummarizer({ provider: "auto" }, { env: {} }), "/gv");
+    expect(heuristic).toContain("heuristic");
+    expect(heuristic).toContain("grapevine key set openai");
+    expect(heuristic).toContain("Never ask the user to paste a key into the chat");
+
+    const ready = describeSummarizer(
+      resolveSummarizer({ provider: "auto" }, { env: { GRAPEVINE_ANTHROPIC_API_KEY: "not-a-real-key" } }),
+    );
+    expect(ready).toContain("anthropic (claude-haiku-4-5), key from $GRAPEVINE_ANTHROPIC_API_KEY");
+    expect(ready).not.toContain("not-a-real-key");
+
+    const broken = describeSummarizer(resolveSummarizer({ provider: "anthropic" }, { env: {} }));
+    expect(broken).toContain("can't run");
+  });
+
+  test("saves keys to a file only the user can read", () => {
+    const home = mkdtempSync(join(tmpdir(), "grapevine-keys-"));
+    saveCredential(home, "openai", "not-a-real-key");
+    expect(loadCredentials(home)).toEqual({ openai: "not-a-real-key" });
+    expect(statSync(join(home, "credentials.json")).mode & 0o777).toBe(0o600);
+    saveCredential(home, "openai", undefined);
+    expect(loadCredentials(home)).toEqual({});
   });
 });

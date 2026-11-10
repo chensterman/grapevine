@@ -158,6 +158,18 @@ class SqliteStore implements Store {
     return row ? (this.hydrate([row])[0] ?? null) : null;
   }
 
+  async deleteBySession(sessionKey: string): Promise<boolean> {
+    return this.db.transaction(() => {
+      const row = this.db
+        .query<{ id: string }, { sessionKey: string }>("SELECT id FROM records WHERE session_key = $sessionKey")
+        .get({ sessionKey });
+      if (!row) return false;
+      this.db.query("DELETE FROM records_fts WHERE record_id = $id").run({ id: row.id });
+      this.db.query("DELETE FROM records WHERE id = $id").run({ id: row.id });
+      return true;
+    })();
+  }
+
   async recent(query: RecentQuery): Promise<ContextRecord[]> {
     const rows = this.db
       .query<RecordRow, { repo: string | null; limit: number }>(

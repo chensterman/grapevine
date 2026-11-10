@@ -15,6 +15,29 @@ export interface Transcript {
   turns: TranscriptTurn[];
   /** Paths the agent edited, as reported by its tool calls. May be absolute. */
   touchedPaths: string[];
+  /** Whether the agent ran shell commands, which can change files its edit tools don't report. */
+  ranCommands?: boolean;
+  /** The latest grapevine `share_session` or `stop_sharing` call in the session, if any. */
+  shareRequest?: ShareRequest;
+}
+
+export type ShareRequest = "share" | "stop";
+
+export const SHARE_TOOLS: Record<string, ShareRequest> = { share_session: "share", stop_sharing: "stop" };
+
+/**
+ * Recognizes a call to grapevine's share tools however the agent records MCP calls: as a
+ * namespaced tool name (`mcp__grapevine__share_session`) or as a generic MCP-call tool whose input
+ * names the server and tool (`{ namespace: "user-grapevine", toolName: "share_session" }`).
+ */
+export function shareRequestFromToolCall(name: string, input: Record<string, unknown>): ShareRequest | undefined {
+  for (const [tool, request] of Object.entries(SHARE_TOOLS)) {
+    if (name.includes("grapevine") && name.endsWith(tool)) return request;
+    const target = input.toolName ?? input.tool_name ?? input.tool;
+    const server = input.namespace ?? input.server ?? input.serverName ?? input.server_name;
+    if (target === tool && typeof server === "string" && server.includes("grapevine")) return request;
+  }
+  return undefined;
 }
 
 const TOOL_TURN_LIMIT = 400;

@@ -2,9 +2,9 @@
 
 **Your teammates' agents already figured this out.**
 
-grapevine is passive, path-indexed team memory for coding agents. When a coding-agent session ends, a hook distills it into a short record: what the session set out to do, the decisions it made and why, the approaches that failed, and the questions it left open. Records are indexed by the files the session changed. Before your agent touches those files, it asks grapevine what your teammates' agents already learned.
+grapevine is path-indexed team memory for coding agents. When you ask your agent to share a session, a hook distills it into a short record: what the session set out to do, the decisions it made and why, the approaches that failed, and the questions it left open. Records are indexed by the files the session changed. Before your agent touches those files, it asks grapevine what your teammates' agents already learned.
 
-- **Passive.** Capture runs from agent hooks. Nobody has to remember to post updates.
+- **Opt-in, then hands-free.** Say "share this session" and agent hooks keep the record up to date from then on. Sessions you don't share are never summarized.
 - **Indexed by code.** Retrieval is driven by the paths you're about to edit, not by chat channels.
 - **Distilled, not transcripts.** Only redacted summaries are stored. Raw transcripts stay on the author's machine.
 - **Yours.** Local SQLite today; bring your own model for summaries, including local ones.
@@ -14,7 +14,8 @@ grapevine is passive, path-indexed team memory for coding agents. When a coding-
 ## How it works
 
 ```
- agent session ──(Stop / SessionEnd hook)──▶ grapevine capture
+ "share this session" ──(MCP: share_session)
+ agent session ──(Stop / SessionEnd hook)──▶ grapevine capture (shared sessions only)
                                                │ redact secrets
                                                │ summarize with your model
                                                │ add paths from tool calls + git diff
@@ -41,7 +42,11 @@ A record looks like this:
 }
 ```
 
-Capture is throttled: the Claude Code `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine re-summarizes at most every 15 minutes per session (configurable), and always when the session ends. Each session has one record that is updated in place.
+### Sharing a session
+
+Sessions are captured only when you ask. Tell your agent "share this session" (or "record this for the team") and it calls grapevine's `share_session` tool. That call lands in the session's transcript, which is how the hook knows the session is opted in; the MCP server itself stores nothing. You can ask at any point: the summary always covers the whole session, including what came before. Say "stop sharing" and the agent calls `stop_sharing`, which stops capture and deletes the session's record.
+
+Once a session is shared, capture is throttled: the Claude Code `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine summarizes right away, then at most every 15 minutes (configurable), and always when the session ends. Each session has one record that is updated in place. To capture everything without asking, set `capture.mode` to `always`. To capture a finished session after the fact, run `grapevine capture --transcript <file>`.
 
 ## Quick start
 
@@ -67,7 +72,16 @@ Hooks and MCP config point at the absolute path of this checkout, so they keep w
 
 It backs up each file it changes to `<file>.grapevine-backup`. Use `--dry-run` to preview, and `grapevine uninstall` to undo. Then add the printed snippet to your `AGENTS.md` or `CLAUDE.md` so agents call `context_for` before editing.
 
-To get real summaries, set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Without a key, grapevine falls back to a heuristic summary (the first user message as the task).
+### Model summaries
+
+By default grapevine uses no model: a record gets the task (your first message) and the changed files, and nothing leaves your machine. For decisions, dead ends, and open questions, give grapevine its own key:
+
+```sh
+grapevine key set openai        # or anthropic; pastes into a hidden prompt, saved to ~/.grapevine/credentials.json (0600)
+grapevine status                # shows the capture mode and which summarizer will run
+```
+
+You can also export `GRAPEVINE_OPENAI_API_KEY` or `GRAPEVINE_ANTHROPIC_API_KEY`, or point grapevine at a local model (see [Configuration](#configuration)). grapevine deliberately ignores generic names like `OPENAI_API_KEY`, so it never spends a key another tool exported. Ask your agent "help me set up grapevine summaries": it calls `summarizer_setup` and walks you through it, without asking you to paste the key into chat.
 
 ## CLI
 
@@ -75,7 +89,9 @@ To get real summaries, set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Without a ke
 grapevine search -p src/webhooks/retry.ts        # what do we know about this file?
 grapevine search "redis cluster multi"           # full-text over tasks, decisions, dead ends
 grapevine recent --all-repos                     # newest sessions everywhere
-grapevine capture --transcript ~/.claude/projects/<project>/<session>.jsonl
+grapevine capture --transcript ~/.claude/projects/<project>/<session>.jsonl   # share a past session
+grapevine status                                 # capture mode and summarizer
+grapevine key set openai                         # save a key for grapevine only
 grapevine mcp                                    # MCP server on stdio
 ```
 
@@ -88,6 +104,9 @@ Searches are scoped to the repo you're in (by normalized `origin` URL) unless yo
 | `context_for` | Paths and/or a task description in; ranked records out. Call before editing. |
 | `recent_work` | Latest sessions in the repo. |
 | `who_touches` | Which teammates' sessions changed a path, so you know who to ask. |
+| `share_session` | Marks this session for capture. Call when the user asks to share it. |
+| `stop_sharing` | Stops capture and deletes this session's record. |
+| `summarizer_setup` | Which summarizer runs, and step-by-step setup for a key or local model. |
 
 Results are ranked by path proximity (same file, then same directory, then nearby), full-text match, and recency.
 
@@ -104,12 +123,14 @@ Results are ranked by path proximity (same file, then same directory, then nearb
     "apiKeyEnv": "OLLAMA_API_KEY"
   },
   "redact": { "patterns": ["acme-customer-\\d+"] },
-  "capture": { "minIntervalMinutes": 15, "detectPr": true, "issuePattern": "([a-z]+-\\d+)" },
+  "capture": { "mode": "opt-in", "minIntervalMinutes": 15, "detectPr": true, "issuePattern": "([a-z]+-\\d+)" },
   "store": { "type": "sqlite", "path": "/custom/grapevine.db" }
 }
 ```
 
-- `summarizer.provider`: `auto` (Anthropic if `ANTHROPIC_API_KEY` is set, else OpenAI-compatible if `OPENAI_API_KEY` is set, else heuristic), `anthropic`, `openai-compatible` (OpenAI, OpenRouter, Ollama, vLLM, ...), or `heuristic`.
+- `summarizer.provider`: `auto` (Anthropic if a grapevine Anthropic key is set or saved, else OpenAI-compatible if a grapevine OpenAI key is, else heuristic), `anthropic`, `openai-compatible` (OpenAI, OpenRouter, Ollama, vLLM, ...), or `heuristic`.
+- `summarizer.apiKeyEnv`: read the key from this variable instead, e.g. for a local model or to reuse a key on purpose.
+- `capture.mode`: `opt-in` (default) captures only sessions shared with `share_session`; `always` captures every session.
 - `redact.patterns`: extra regexes, applied on top of the built-in secret patterns.
 - `capture.issuePattern`: pulls an issue key such as `ENG-42` out of branch names. Off by default.
 - `capture.detectPr`: looks up the branch's PR with `gh` when available.
@@ -117,7 +138,8 @@ Results are ranked by path proximity (same file, then same directory, then nearb
 ## Privacy
 
 - Secrets are redacted before anything reaches the summarizer, and again on the summary. Built-in rules cover private keys, AWS, GitHub, Anthropic, OpenAI, Slack, JWTs, bearer tokens, URL credentials, and `password=`-style assignments.
-- The transcript is sent to the summarizer you configure. Use a local model if transcripts can't leave your machine.
+- Nothing is summarized unless you share the session (or set `capture.mode` to `always`).
+- With no grapevine key configured, nothing leaves your machine. With one, the redacted transcript of shared sessions is sent to that model. Use a local model if transcripts can't leave your machine.
 - Only the distilled record is stored. `transcriptRef` is a local file path, never the transcript itself.
 
 ## Architecture
