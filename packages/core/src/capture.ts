@@ -70,11 +70,13 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord | 
   const input = { transcript, rendered: renderTranscript(transcript), paths, branch };
 
   let summary: Summary;
+  let kept: ContextRecord | null = null;
   try {
     summary = await options.summarizer.summarize(input);
   } catch (error) {
     options.onWarning?.(`${options.summarizer.name} failed, using heuristic summary: ${String(error)}`);
     summary = await heuristicSummarizer().summarize(input);
+    kept = existing;
   }
 
   const verified = verifySummary(summary, transcript, git.root, paths);
@@ -95,12 +97,12 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord | 
     agent,
     startedAt: existing?.startedAt ?? raw.startedAt ?? now,
     updatedAt: now,
-    task: clean(summary.task) || existing?.task || "Untitled session",
+    task: kept?.task ?? (clean(summary.task) || existing?.task || "Untitled session"),
     paths,
-    decisions: cleanItems(verified.decisions),
-    deadEnds: cleanItems(verified.deadEnds),
-    openQuestions: cleanItems(verified.openQuestions),
-    status: summary.status,
+    decisions: kept?.decisions ?? cleanItems(verified.decisions),
+    deadEnds: kept?.deadEnds ?? cleanItems(verified.deadEnds),
+    openQuestions: kept?.openQuestions ?? cleanItems(verified.openQuestions),
+    status: kept?.status ?? summary.status,
     commit: git.head ?? existing?.commit,
     transcriptRef: options.transcriptRef,
   };

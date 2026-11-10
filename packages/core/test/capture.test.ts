@@ -104,4 +104,16 @@ describe("capture summaries", () => {
     expect(record?.commit).toBe("abc123");
     expect(warnings).toEqual(["Dropped 1 summary item(s) that no transcript turn supports"]);
   });
+
+  test("keeps the existing summary when the summarizer fails", async () => {
+    const store = memoryStore();
+    const git = { root: mkdtempSync(join(tmpdir(), "grapevine-capture-")), repo: "r", author: "a", changedPaths: [] };
+    const transcript = { sessionId: "s3", turns: [{ role: "user" as const, text: "Fix retries" }], touchedPaths: [] };
+    const decisions = [{ text: "Capped backoff", paths: [] }];
+    await store.upsert({ ...(await capture({ transcript, agent: "test", store, summarizer: heuristicSummarizer(), git }))!, task: "Model task", decisions, status: "done" });
+
+    const failing: Summarizer = { name: "broken", summarize: () => Promise.reject(new Error("429")) };
+    const record = await capture({ transcript, agent: "test", store, summarizer: failing, git, onWarning: () => {} });
+    expect(record).toMatchObject({ task: "Model task", decisions, status: "done" });
+  });
 });
