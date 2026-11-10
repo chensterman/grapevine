@@ -9,7 +9,7 @@ grapevine is passive, path-indexed team memory for coding agents. When a coding-
 - **Distilled, not transcripts.** Only redacted summaries are stored. Raw transcripts stay on the author's machine.
 - **Yours.** Local SQLite today; bring your own model for summaries, including local ones.
 
-> Status: early (v0.1). Works locally for one person with Claude Code. Team sharing is next; see the [roadmap](#roadmap).
+> Status: early (v0.1). Works locally for one person with Claude Code and Cursor. Team sharing is next; see the [roadmap](#roadmap).
 
 ## How it works
 
@@ -41,7 +41,7 @@ A record looks like this:
 }
 ```
 
-Capture is throttled: the Claude Code `Stop` hook fires after every agent turn, so grapevine re-summarizes at most every 15 minutes per session (configurable), and always on `SessionEnd`. Each session has one record that is updated in place.
+Capture is throttled: the Claude Code `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine re-summarizes at most every 15 minutes per session (configurable), and always when the session ends. Each session has one record that is updated in place.
 
 ## Quick start
 
@@ -62,6 +62,7 @@ Hooks and MCP config point at the absolute path of this checkout, so they keep w
 - adds `Stop` and `SessionEnd` capture hooks to `~/.claude/settings.json`
 - registers the MCP server with Claude Code (`claude mcp add --scope user grapevine ...`)
 - adds the MCP server to `~/.cursor/mcp.json`
+- adds `stop` and `sessionEnd` capture hooks to `~/.cursor/hooks.json`
 - writes `~/.grapevine/config.json`
 
 It backs up each file it changes to `<file>.grapevine-backup`. Use `--dry-run` to preview, and `grapevine uninstall` to undo. Then add the printed snippet to your `AGENTS.md` or `CLAUDE.md` so agents call `context_for` before editing.
@@ -126,6 +127,7 @@ Results are ranked by path proximity (same file, then same directory, then nearb
 | [`@chensterman/grapevine-core`](packages/core) | Record format, redaction, summarizers, path ranking, git inspection, `Store` interface |
 | [`@chensterman/grapevine-store-sqlite`](packages/store-sqlite) | Local SQLite + FTS5 store |
 | [`@chensterman/grapevine-adapter-claude-code`](packages/adapter-claude-code) | Claude Code transcript parser and hook installer |
+| [`@chensterman/grapevine-adapter-cursor`](packages/adapter-cursor) | Cursor transcript parser and hook installer |
 | [`@chensterman/grapevine-mcp`](packages/mcp) | MCP server |
 | [`@chensterman/grapevine`](packages/cli) | `grapevine` CLI |
 
@@ -135,7 +137,7 @@ Adding an agent means writing an adapter that turns its transcript into the core
 
 - **Team sharing:** a self-hostable server (`grapevine serve`, Postgres) and a git-backed store (records as Markdown in a shared repo, no server).
 - **Review before publish:** queue records locally so authors can edit or drop them before teammates see them.
-- **More agents:** Cursor, Codex, and Orca adapters.
+- **More agents:** Grok Build, Codex, and Orca adapters.
 - **Overlap detection:** warn when two people's active sessions touch the same paths.
 - **Evaluation:** a set of real transcripts paired with the facts a teammate needed, to measure summary quality.
 

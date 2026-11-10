@@ -1,4 +1,5 @@
 import { type ClaudeSettings, installHooks, uninstallHooks } from "@chensterman/grapevine-adapter-claude-code";
+import * as cursorHooks from "@chensterman/grapevine-adapter-cursor";
 import { configPath, DEFAULT_CONFIG } from "@chensterman/grapevine-core";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -37,6 +38,10 @@ export function claudeSettingsPath(): string {
 
 export function cursorMcpPath(): string {
   return join(homedir(), ".cursor", "mcp.json");
+}
+
+export function cursorHooksPath(): string {
+  return join(homedir(), ".cursor", "hooks.json");
 }
 
 export function detectAgents(): { claudeCode: boolean; cursor: boolean } {
@@ -79,6 +84,12 @@ export function install(options: InstallOptions): void {
     } else {
       write(path, { ...settings, mcpServers: { ...settings.mcpServers, grapevine: entry } }, "grapevine MCP server");
     }
+
+    const hooksPath = cursorHooksPath();
+    const hookCommand = shellCommand([...options.self, "hook", cursorHooks.AGENT]);
+    const result = cursorHooks.installHooks(readJson<cursorHooks.CursorHooksFile>(hooksPath, {}), hookCommand);
+    if (result.changed) write(hooksPath, result.file, "stop and sessionEnd capture hooks");
+    else log(`Cursor hooks already installed in ${hooksPath}`);
   }
 }
 
@@ -106,6 +117,12 @@ export function uninstall(options: Omit<InstallOptions, "self" | "registerClaude
     if (settings.mcpServers?.grapevine) {
       const { grapevine: _removed, ...mcpServers } = settings.mcpServers;
       write(path, { ...settings, mcpServers }, "removed grapevine MCP server");
+    }
+
+    const hooksPath = cursorHooksPath();
+    if (existsSync(hooksPath)) {
+      const result = cursorHooks.uninstallHooks(readJson<cursorHooks.CursorHooksFile>(hooksPath, {}));
+      if (result.changed) write(hooksPath, result.file, "removed grapevine hooks");
     }
   }
   log(`left your records and config in ${options.home}`);

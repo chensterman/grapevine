@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { AGENT as CLAUDE_CODE, parseClaudeTranscript, parseHookInput } from "@chensterman/grapevine-adapter-claude-code";
+import * as claudeCode from "@chensterman/grapevine-adapter-claude-code";
+import * as cursor from "@chensterman/grapevine-adapter-cursor";
 import {
   capture,
   createSummarizer,
@@ -20,6 +21,7 @@ import {
   type SummarizerProvider,
   storePath,
   toRepoRelative,
+  type Transcript,
   VERSION,
 } from "@chensterman/grapevine-core";
 import { runStdioServer } from "@chensterman/grapevine-mcp";
@@ -38,10 +40,10 @@ Usage:
       Find records by path and/or text, scoped to the current repo by default.
   grapevine recent [--repo <id> | --all-repos] [-n <limit>] [--json]
       List the most recent sessions.
-  grapevine capture --transcript <file> [--agent claude-code] [--cwd <dir>] [--summarizer <provider>] [--json]
+  grapevine capture --transcript <file> [--agent claude-code|cursor] [--cwd <dir>] [--summarizer <provider>] [--json]
       Summarize and store one session now.
-  grapevine hook claude-code
-      Claude Code hook entry point. Reads hook JSON on stdin and captures in the background.
+  grapevine hook claude-code|cursor
+      Agent hook entry point. Reads hook JSON on stdin and captures in the background.
   grapevine mcp
       Run the MCP server on stdio.
 
@@ -52,6 +54,38 @@ Environment:
 `;
 
 const PROVIDERS: SummarizerProvider[] = ["auto", "anthropic", "openai-compatible", "heuristic"];
+
+interface HookInput {
+  session_id: string;
+  transcript_path: string;
+  cwd?: string;
+  hook_event_name?: string;
+}
+
+interface Agent {
+  parseTranscript: (jsonl: string, sessionId: string) => Transcript;
+  parseHookInput: (raw: string) => HookInput | null;
+  sessionEndEvent: string;
+}
+
+const AGENTS: Record<string, Agent> = {
+  [claudeCode.AGENT]: {
+    parseTranscript: claudeCode.parseClaudeTranscript,
+    parseHookInput: claudeCode.parseHookInput,
+    sessionEndEvent: "SessionEnd",
+  },
+  [cursor.AGENT]: {
+    parseTranscript: cursor.parseCursorTranscript,
+    parseHookInput: cursor.parseHookInput,
+    sessionEndEvent: "sessionEnd",
+  },
+};
+
+function agentFor(id: string | undefined): Agent {
+  const agent = id ? AGENTS[id] : undefined;
+  if (!agent) throw new Error(`Unsupported agent "${id ?? ""}". Supported: ${Object.keys(AGENTS).join(", ")}`);
+  return agent;
+}
 
 interface Context {
   home: string;
@@ -100,17 +134,17 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
     args,
     options: {
       transcript: { type: "string" },
-      agent: { type: "string", default: CLAUDE_CODE },
+      agent: { type: "string", default: claudeCode.AGENT },
       cwd: { type: "string" },
       summarizer: { type: "string" },
       json: { type: "boolean", default: false },
     },
   });
   if (!values.transcript) throw new Error("capture needs --transcript <file>");
-  if (values.agent !== CLAUDE_CODE) throw new Error(`Unsupported agent "${values.agent}". Supported: ${CLAUDE_CODE}`);
+  const agent = agentFor(values.agent);
 
   const transcriptPath = resolve(values.transcript);
-  const transcript = parseClaudeTranscript(readFileSync(transcriptPath, "utf8"), basename(transcriptPath, ".jsonl"));
+  const transcript = agent.parseTranscript(readFileSync(transcriptPath, "utf8"), basename(transcriptPath, ".jsonl"));
   const store = openStore(ctx);
   try {
     const record = await capture({
@@ -137,20 +171,21 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
 }
 
 async function commandHook(ctx: Context, args: string[]): Promise<void> {
-  if (args[0] !== CLAUDE_CODE) throw new Error(`Unsupported hook "${args[0] ?? ""}". Supported: ${CLAUDE_CODE}`);
-  const input = parseHookInput(await Bun.stdin.text());
+  const agentId = args[0];
+  const agent = agentFor(agentId);
+  const input = agent.parseHookInput(await Bun.stdin.text());
   if (!input) return;
 
   const stateDir = join(ctx.home, "state");
   const logDir = join(ctx.home, "logs");
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(logDir, { recursive: true });
-  const key = createHash("sha256").update(`${CLAUDE_CODE}:${input.session_id}`).digest("hex").slice(0, 24);
+  const key = createHash("sha256").update(`${agentId}:${input.session_id}`).digest("hex").slice(0, 24);
   const stateFile = join(stateDir, `${key}.json`);
   const lastCaptureAt = existsSync(stateFile)
     ? ((JSON.parse(readFileSync(stateFile, "utf8")) as { lastCaptureAt?: number }).lastCaptureAt ?? 0)
     : 0;
-  const isSessionEnd = input.hook_event_name === "SessionEnd";
+  const isSessionEnd = input.hook_event_name === agent.sessionEndEvent;
   if (!isSessionEnd && Date.now() - lastCaptureAt < ctx.config.capture.minIntervalMinutes * 60_000) return;
   writeFileSync(stateFile, JSON.stringify({ lastCaptureAt: Date.now() }));
 
@@ -158,7 +193,7 @@ async function commandHook(ctx: Context, args: string[]): Promise<void> {
   const out = openSync(join(logDir, "capture.log"), "a");
   const child = spawn(
     command!,
-    [...prefix, "capture", "--agent", CLAUDE_CODE, "--transcript", input.transcript_path, "--cwd", input.cwd ?? process.cwd()],
+    [...prefix, "capture", "--agent", agentId!, "--transcript", input.transcript_path, "--cwd", input.cwd ?? process.cwd()],
     { detached: true, stdio: ["ignore", out, out], env: process.env },
   );
   child.unref();

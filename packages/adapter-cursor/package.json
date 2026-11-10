@@ -1,0 +1,13 @@
+{
+  "name": "@chensterman/grapevine-adapter-cursor",
+  "version": "0.1.0",
+  "description": "Cursor transcript parsing and hook installation for grapevine.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@chensterman/grapevine-core": "workspace:*"
+  }
+}

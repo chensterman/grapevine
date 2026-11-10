@@ -16,6 +16,13 @@
         "@chensterman/grapevine-core": "workspace:*",
       },
     },
+    "packages/adapter-cursor": {
+      "name": "@chensterman/grapevine-adapter-cursor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@chensterman/grapevine-core": "workspace:*",
+      },
+    },
     "packages/cli": {
       "name": "@chensterman/grapevine",
       "version": "0.1.0",
@@ -24,6 +31,7 @@
       },
       "dependencies": {
         "@chensterman/grapevine-adapter-claude-code": "workspace:*",
+        "@chensterman/grapevine-adapter-cursor": "workspace:*",
         "@chensterman/grapevine-core": "workspace:*",
         "@chensterman/grapevine-mcp": "workspace:*",
         "@chensterman/grapevine-store-sqlite": "workspace:*",
@@ -60,6 +68,8 @@
     "@chensterman/grapevine": ["@chensterman/grapevine@workspace:packages/cli"],
 
     "@chensterman/grapevine-adapter-claude-code": ["@chensterman/grapevine-adapter-claude-code@workspace:packages/adapter-claude-code"],
+
+    "@chensterman/grapevine-adapter-cursor": ["@chensterman/grapevine-adapter-cursor@workspace:packages/adapter-cursor"],
 
     "@chensterman/grapevine-core": ["@chensterman/grapevine-core@workspace:packages/core"],
 

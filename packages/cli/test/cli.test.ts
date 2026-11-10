@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 const FIXTURE = join(import.meta.dir, "..", "..", "adapter-claude-code", "test", "fixtures", "session.jsonl");
+const CURSOR_FIXTURE = join(import.meta.dir, "..", "..", "adapter-cursor", "test", "fixtures", "session.jsonl");
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `grapevine-${prefix}-`));
@@ -116,6 +117,34 @@ describe("grapevine CLI", () => {
     expect(lines()).toBe(before);
   }, 30_000);
 
+  test("cursor hook captures using the workspace root", async () => {
+    const { grapevineHome, run } = sandbox();
+    const { repo } = repoWithTranscript();
+    const transcript = join(repo, "..", `${repo.split("/").pop()}-conv-9.jsonl`);
+    writeFileSync(transcript, readFileSync(CURSOR_FIXTURE, "utf8").replaceAll("/work/app", repo));
+    const stdin = JSON.stringify({
+      conversation_id: "conv-9",
+      session_id: "conv-9",
+      transcript_path: transcript,
+      hook_event_name: "sessionEnd",
+      workspace_roots: [repo],
+    });
+
+    expect(run(["hook", "cursor"], { stdin }).code).toBe(0);
+    const logPath = join(grapevineHome, "logs", "capture.log");
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && !(existsSync(logPath) && readFileSync(logPath, "utf8").includes("captured"))) {
+      await Bun.sleep(100);
+    }
+    expect(readFileSync(logPath, "utf8")).toContain("captured");
+
+    const [record] = JSON.parse(run(["recent", "--json"], { cwd: repo }).stdout) as ContextRecord[];
+    expect(record?.agent).toBe("cursor");
+    expect(record?.repo).toBe("github.com/acme/app");
+    expect(record?.paths.sort()).toEqual(["src/webhooks/backoff.ts", "src/webhooks/retry.ts"]);
+    expect(record?.task).toBe("Fix the webhook retry loop in src/webhooks/retry.ts so it backs off exponentially.");
+  }, 30_000);
+
   test("hook exits 0 and logs to GRAPEVINE_HOME when config is corrupt", () => {
     const { grapevineHome, run } = sandbox();
     writeFileSync(join(grapevineHome, "config.json"), "{ broken");
@@ -142,12 +171,18 @@ describe("grapevine CLI", () => {
     expect(existsSync(`${claudeSettings}.grapevine-backup`)).toBe(true);
     const cursor = JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8"));
     expect(cursor.mcpServers.grapevine.args.at(-1)).toBe("mcp");
+    const cursorHooksPath = join(home, ".cursor", "hooks.json");
+    const cursorHooks = JSON.parse(readFileSync(cursorHooksPath, "utf8"));
+    expect(cursorHooks.version).toBe(1);
+    expect(cursorHooks.hooks.stop[0].command).toContain("hook cursor");
+    expect(cursorHooks.hooks.sessionEnd).toHaveLength(1);
 
-    expect(run(["init"]).stdout).toContain("already installed");
+    expect(run(["init"]).stdout).toContain("Cursor hooks already installed");
 
     expect(run(["uninstall"]).code).toBe(0);
     expect(JSON.parse(readFileSync(claudeSettings, "utf8"))).toEqual({ model: "opus" });
     expect(JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).mcpServers).toEqual({});
+    expect(JSON.parse(readFileSync(cursorHooksPath, "utf8"))).toEqual({ version: 1, hooks: {} });
   });
 
   test("init --dry-run writes nothing", () => {
