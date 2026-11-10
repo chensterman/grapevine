@@ -46,6 +46,12 @@ describe("parseHookInput", () => {
     expect(input?.hook_event_name).toBe("SessionEnd");
   });
 
+  test("ignores Cursor payloads, which Cursor sends to Claude Code hooks too", () => {
+    expect(
+      parseHookInput(JSON.stringify({ session_id: "s", transcript_path: "/t.jsonl", cursor_version: "3.28.7" })),
+    ).toBeNull();
+  });
+
   test("rejects payloads without a transcript", () => {
     expect(parseHookInput(JSON.stringify({ session_id: "s" }))).toBeNull();
     expect(parseHookInput("garbage")).toBeNull();
