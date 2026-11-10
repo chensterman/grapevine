@@ -1,0 +1,13 @@
+{
+  "name": "@chensterman/grapevine-adapter-codex",
+  "version": "0.1.0",
+  "description": "Codex CLI transcript parsing and hook installation for grapevine.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@chensterman/grapevine-core": "workspace:*"
+  }
+}

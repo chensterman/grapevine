@@ -130,12 +130,13 @@ export interface ClaudeHookInput {
   hook_event_name?: string;
 }
 
-/** Returns null for other agents that also run Claude Code hooks, like Cursor, which has its own adapter. */
+/** Returns null for other agents that may also run Claude Code hooks, like Cursor and Codex, which have their own adapters. */
 export function parseHookInput(raw: string): ClaudeHookInput | null {
   try {
     const input = JSON.parse(raw) as Partial<ClaudeHookInput> & { cursor_version?: string };
     if (input.cursor_version !== undefined) return null;
     if (typeof input.session_id !== "string" || typeof input.transcript_path !== "string") return null;
+    if (/[/\\]\.codex[/\\]/.test(input.transcript_path)) return null;
     return input as ClaudeHookInput;
   } catch {
     return null;

@@ -16,6 +16,13 @@
         "@chensterman/grapevine-core": "workspace:*",
       },
     },
+    "packages/adapter-codex": {
+      "name": "@chensterman/grapevine-adapter-codex",
+      "version": "0.1.0",
+      "dependencies": {
+        "@chensterman/grapevine-core": "workspace:*",
+      },
+    },
     "packages/adapter-cursor": {
       "name": "@chensterman/grapevine-adapter-cursor",
       "version": "0.1.0",
@@ -31,6 +38,7 @@
       },
       "dependencies": {
         "@chensterman/grapevine-adapter-claude-code": "workspace:*",
+        "@chensterman/grapevine-adapter-codex": "workspace:*",
         "@chensterman/grapevine-adapter-cursor": "workspace:*",
         "@chensterman/grapevine-core": "workspace:*",
         "@chensterman/grapevine-mcp": "workspace:*",
@@ -68,6 +76,8 @@
     "@chensterman/grapevine": ["@chensterman/grapevine@workspace:packages/cli"],
 
     "@chensterman/grapevine-adapter-claude-code": ["@chensterman/grapevine-adapter-claude-code@workspace:packages/adapter-claude-code"],
+
+    "@chensterman/grapevine-adapter-codex": ["@chensterman/grapevine-adapter-codex@workspace:packages/adapter-codex"],
 
     "@chensterman/grapevine-adapter-cursor": ["@chensterman/grapevine-adapter-cursor@workspace:packages/adapter-cursor"],
 

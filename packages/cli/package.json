@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@chensterman/grapevine-adapter-claude-code": "workspace:*",
+    "@chensterman/grapevine-adapter-codex": "workspace:*",
     "@chensterman/grapevine-adapter-cursor": "workspace:*",
     "@chensterman/grapevine-core": "workspace:*",
     "@chensterman/grapevine-mcp": "workspace:*",

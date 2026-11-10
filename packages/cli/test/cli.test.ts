@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 const FIXTURE = join(import.meta.dir, "..", "..", "adapter-claude-code", "test", "fixtures", "session.jsonl");
+const CODEX_FIXTURE = join(import.meta.dir, "..", "..", "adapter-codex", "test", "fixtures", "session.jsonl");
 const CURSOR_FIXTURE = join(import.meta.dir, "..", "..", "adapter-cursor", "test", "fixtures", "session.jsonl");
 
 // Every test spawns the CLI, and cold starts on CI runners can exceed the 5s default.
@@ -229,8 +230,12 @@ describe("grapevine CLI", () => {
     const { home, run } = sandbox();
     mkdirSync(join(home, ".claude"));
     mkdirSync(join(home, ".cursor"));
+    mkdirSync(join(home, ".codex"));
     const claudeSettings = join(home, ".claude", "settings.json");
     writeFileSync(claudeSettings, JSON.stringify({ model: "opus" }));
+    const codexHooksPath = join(home, ".codex", "hooks.json");
+    const otherCodexHook = { hooks: { Stop: [{ hooks: [{ type: "command", command: "other-tool turn-end", timeout: 10 }] }] } };
+    writeFileSync(codexHooksPath, JSON.stringify(otherCodexHook));
 
     const first = run(["init"]);
     expect(first.code).toBe(0);
@@ -247,13 +252,36 @@ describe("grapevine CLI", () => {
     expect(cursorHooks.version).toBe(1);
     expect(cursorHooks.hooks.stop[0].command).toContain("hook cursor");
     expect(cursorHooks.hooks.sessionEnd).toHaveLength(1);
+    const codexHooks = JSON.parse(readFileSync(codexHooksPath, "utf8"));
+    expect(codexHooks.hooks.Stop).toHaveLength(2);
+    expect(codexHooks.hooks.SessionEnd[0].hooks[0].command).toContain("hook codex");
+    expect(first.stdout).toContain("codex CLI not found; register manually with: codex mcp add grapevine --");
 
-    expect(run(["init"]).stdout).toContain("Cursor hooks already installed");
+    const second = run(["init"]).stdout;
+    expect(second).toContain("Cursor hooks already installed");
+    expect(second).toContain("Codex hooks already installed");
 
     expect(run(["uninstall"]).code).toBe(0);
     expect(JSON.parse(readFileSync(claudeSettings, "utf8"))).toEqual({ model: "opus" });
     expect(JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).mcpServers).toEqual({});
     expect(JSON.parse(readFileSync(cursorHooksPath, "utf8"))).toEqual({ version: 1, hooks: {} });
+    expect(JSON.parse(readFileSync(codexHooksPath, "utf8"))).toEqual(otherCodexHook);
+  });
+
+  test("codex hook captures a shared Codex session", async () => {
+    const { grapevineHome, run } = sandbox();
+    const { repo } = repoWithTranscript();
+    const transcript = join(repo, "..", `${repo.split("/").pop()}-rollout.jsonl`);
+    writeFileSync(transcript, readFileSync(CODEX_FIXTURE, "utf8").replaceAll("/work/app", repo));
+    const stdin = JSON.stringify({ session_id: "thread-1", transcript_path: transcript, cwd: repo, hook_event_name: "SessionEnd" });
+
+    expect(run(["hook", "codex"], { stdin }).code).toBe(0);
+    await waitForLog(join(grapevineHome, "logs", "capture.log"), "captured");
+    const [record] = JSON.parse(run(["recent", "--json"], { cwd: repo }).stdout) as ContextRecord[];
+    expect(record?.agent).toBe("codex");
+    expect(record?.sessionKey).toBe("codex:thread-1");
+    expect(record?.paths).toContain("src/webhooks/backoff.ts");
+    expect(record?.task).toStartWith("Fix the webhook retry loop");
   });
 
   test("init --dry-run writes nothing", () => {

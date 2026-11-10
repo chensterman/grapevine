@@ -1,4 +1,5 @@
 import { type ClaudeSettings, installHooks, uninstallHooks } from "@chensterman/grapevine-adapter-claude-code";
+import * as codexHooks from "@chensterman/grapevine-adapter-codex";
 import * as cursorHooks from "@chensterman/grapevine-adapter-cursor";
 import { configPath, DEFAULT_CONFIG } from "@chensterman/grapevine-core";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -18,8 +19,11 @@ export interface InstallOptions {
   dryRun: boolean;
   claudeCode: boolean;
   cursor: boolean;
+  codex: boolean;
   /** Registers the MCP server with Claude Code. Injected so tests don't shell out. */
   registerClaudeMcp?: (command: string[]) => string;
+  /** Registers the MCP server with Codex, which keeps it in TOML config. Injected so tests don't shell out. */
+  registerCodexMcp?: (command: string[]) => string;
   log: (line: string) => void;
 }
 
@@ -46,10 +50,15 @@ export function cursorHooksPath(): string {
   return join(homedir(), ".cursor", "hooks.json");
 }
 
-export function detectAgents(): { claudeCode: boolean; cursor: boolean } {
+export function codexHooksPath(): string {
+  return join(homedir(), ".codex", "hooks.json");
+}
+
+export function detectAgents(): { claudeCode: boolean; cursor: boolean; codex: boolean } {
   return {
     claudeCode: existsSync(join(homedir(), ".claude")),
     cursor: existsSync(join(homedir(), ".cursor")),
+    codex: existsSync(join(homedir(), ".codex")),
   };
 }
 
@@ -93,10 +102,23 @@ export function install(options: InstallOptions): void {
     if (result.changed) write(hooksPath, result.file, "stop and sessionEnd capture hooks");
     else log(`Cursor hooks already installed in ${hooksPath}`);
   }
+
+  if (options.codex) {
+    const hooksPath = codexHooksPath();
+    const hookCommand = shellCommand([...options.self, "hook", codexHooks.AGENT]);
+    const result = codexHooks.installHooks(readJson<codexHooks.CodexHooksFile>(hooksPath, {}), hookCommand);
+    if (result.changed) write(hooksPath, result.file, "Stop and SessionEnd capture hooks");
+    else log(`Codex hooks already installed in ${hooksPath}`);
+
+    const mcpCommand = [...options.self, "mcp"];
+    if (dryRun) log(`would register MCP server with Codex: ${shellCommand(mcpCommand)}`);
+    else if (options.registerCodexMcp) log(options.registerCodexMcp(mcpCommand));
+  }
 }
 
-export function uninstall(options: Omit<InstallOptions, "self" | "registerClaudeMcp"> & {
+export function uninstall(options: Omit<InstallOptions, "self" | "registerClaudeMcp" | "registerCodexMcp"> & {
   unregisterClaudeMcp?: () => string;
+  unregisterCodexMcp?: () => string;
 }): void {
   const { log, dryRun } = options;
   const write = (path: string, value: unknown, what: string) => {
@@ -126,6 +148,15 @@ export function uninstall(options: Omit<InstallOptions, "self" | "registerClaude
       const result = cursorHooks.uninstallHooks(readJson<cursorHooks.CursorHooksFile>(hooksPath, {}));
       if (result.changed) write(hooksPath, result.file, "removed grapevine hooks");
     }
+  }
+
+  if (options.codex) {
+    const hooksPath = codexHooksPath();
+    if (existsSync(hooksPath)) {
+      const result = codexHooks.uninstallHooks(readJson<codexHooks.CodexHooksFile>(hooksPath, {}));
+      if (result.changed) write(hooksPath, result.file, "removed grapevine hooks");
+    }
+    if (!dryRun && options.unregisterCodexMcp) log(options.unregisterCodexMcp());
   }
   log(`left your records and config in ${options.home}`);
 }

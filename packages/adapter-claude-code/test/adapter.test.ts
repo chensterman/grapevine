@@ -56,6 +56,9 @@ describe("parseHookInput", () => {
     expect(
       parseHookInput(JSON.stringify({ session_id: "s", transcript_path: "/t.jsonl", cursor_version: "3.28.7" })),
     ).toBeNull();
+    expect(
+      parseHookInput(JSON.stringify({ session_id: "s", transcript_path: "/Users/me/.codex/sessions/2026/11/01/rollout-x.jsonl" })),
+    ).toBeNull();
   });
 
   test("rejects payloads without a transcript", () => {

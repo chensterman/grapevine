@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, writeFil
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import * as claudeCode from "@chensterman/grapevine-adapter-claude-code";
+import * as codex from "@chensterman/grapevine-adapter-codex";
 import * as cursor from "@chensterman/grapevine-adapter-cursor";
 import {
   capture,
@@ -39,7 +40,7 @@ import { selfCommand, shellCommand } from "./self.ts";
 const USAGE = `grapevine ${VERSION} — passive, path-indexed team memory for coding agents
 
 Usage:
-  grapevine init [--dry-run] [--claude-code] [--cursor]
+  grapevine init [--dry-run] [--claude-code] [--cursor] [--codex]
       Install capture hooks and register the MCP server. Detects installed agents by default.
   grapevine uninstall [--dry-run]
       Remove hooks and MCP registration. Keeps your records.
@@ -47,13 +48,13 @@ Usage:
       Find records by path and/or text, scoped to the current repo by default.
   grapevine recent [--repo <id> | --all-repos] [-n <limit>] [--json]
       List the most recent sessions.
-  grapevine capture --transcript <file> [--agent claude-code|cursor] [--cwd <dir>] [--summarizer <provider>] [--json]
+  grapevine capture --transcript <file> [--agent claude-code|cursor|codex] [--cwd <dir>] [--summarizer <provider>] [--json]
       Summarize and store one session now, whether or not it was shared in-session.
   grapevine status
       Show the capture mode and which summarizer captures will use.
   grapevine key set|remove anthropic|openai
       Save a model API key for grapevine only (read from a hidden prompt or stdin), or remove it.
-  grapevine hook claude-code|cursor
+  grapevine hook claude-code|cursor|codex
       Agent hook entry point. Reads hook JSON on stdin and captures shared sessions in the background.
   grapevine mcp
       Run the MCP server on stdio.
@@ -89,6 +90,11 @@ const AGENTS: Record<string, Agent> = {
     parseTranscript: cursor.parseCursorTranscript,
     parseHookInput: cursor.parseHookInput,
     sessionEndEvent: "sessionEnd",
+  },
+  [codex.AGENT]: {
+    parseTranscript: codex.parseCodexTranscript,
+    parseHookInput: codex.parseHookInput,
+    sessionEndEvent: "SessionEnd",
   },
 };
 
@@ -333,33 +339,41 @@ function agentFlags(args: string[]) {
       "dry-run": { type: "boolean", default: false },
       "claude-code": { type: "boolean" },
       cursor: { type: "boolean" },
+      codex: { type: "boolean" },
     },
   });
-  const explicit = values["claude-code"] !== undefined || values.cursor !== undefined;
+  const explicit = values["claude-code"] !== undefined || values.cursor !== undefined || values.codex !== undefined;
   const detected = detectAgents();
   return {
     dryRun: values["dry-run"],
     claudeCode: explicit ? Boolean(values["claude-code"]) : detected.claudeCode,
     cursor: explicit ? Boolean(values.cursor) : detected.cursor,
+    codex: explicit ? Boolean(values.codex) : detected.codex,
   };
 }
 
-function runClaude(args: string[]): string {
-  if (!Bun.which("claude")) return `claude CLI not found; register manually with: claude ${shellCommand(args)}`;
-  const result = spawnSync("claude", args, { encoding: "utf8" });
-  return (result.stdout || result.stderr || "").trim() || `ran: claude ${shellCommand(args)}`;
+function runAgentCli(cli: string, args: string[]): string {
+  if (!Bun.which(cli)) return `${cli} CLI not found; register manually with: ${cli} ${shellCommand(args)}`;
+  const result = spawnSync(cli, args, { encoding: "utf8" });
+  return (result.stdout || result.stderr || "").trim() || `ran: ${cli} ${shellCommand(args)}`;
 }
 
 function commandInit(ctx: Context, args: string[]): void {
   const flags = agentFlags(args);
-  if (!flags.claudeCode && !flags.cursor) console.log("No supported agents detected. Pass --claude-code or --cursor.");
+  if (!flags.claudeCode && !flags.cursor && !flags.codex) {
+    console.log("No supported agents detected. Pass --claude-code, --cursor, or --codex.");
+  }
   install({
     home: ctx.home,
     self: selfCommand(),
     ...flags,
     registerClaudeMcp: (command) => {
       spawnSync("claude", ["mcp", "remove", "--scope", "user", "grapevine"], { encoding: "utf8" });
-      return runClaude(["mcp", "add", "--scope", "user", "grapevine", "--", ...command]);
+      return runAgentCli("claude", ["mcp", "add", "--scope", "user", "grapevine", "--", ...command]);
+    },
+    registerCodexMcp: (command) => {
+      spawnSync("codex", ["mcp", "remove", "grapevine"], { encoding: "utf8" });
+      return runAgentCli("codex", ["mcp", "add", "grapevine", "--", ...command]);
     },
     log: (line) => console.log(line),
   });
@@ -370,7 +384,8 @@ function commandUninstall(ctx: Context, args: string[]): void {
   uninstall({
     home: ctx.home,
     ...agentFlags(args),
-    unregisterClaudeMcp: () => runClaude(["mcp", "remove", "--scope", "user", "grapevine"]),
+    unregisterClaudeMcp: () => runAgentCli("claude", ["mcp", "remove", "--scope", "user", "grapevine"]),
+    unregisterCodexMcp: () => runAgentCli("codex", ["mcp", "remove", "grapevine"]),
     log: (line) => console.log(line),
   });
 }
