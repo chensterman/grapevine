@@ -175,6 +175,8 @@ Adding an agent means writing an adapter that turns its transcript into the core
 - **More agents:** Grok Build and Orca adapters.
 - **Overlap detection:** warn when two people's active sessions touch the same paths.
 - **Evaluation:** a set of real transcripts paired with the facts a teammate needed, to measure summary quality.
+- **Long sessions:** the summarizer sees only the first 18k and last 42k characters of a transcript, so the middle of long sessions is lost. Merge new turns into the existing record instead, and skip captures with no new turns.
+- **Sharper items:** require a separate `why` for decisions and dead ends, and keep agent-environment noise (sandbox errors, to-dos for the author, explanations of existing code) out of records.
 
 ## Related work
 
