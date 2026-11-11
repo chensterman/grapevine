@@ -2,18 +2,15 @@ import {
   changedSinceIn,
   formatRecord,
   formatResults,
-  type RepoIdentity,
-  readRepoIdentity,
   relativeTime,
+  resolveScope,
   type Store,
-  toRepoRelative,
+  searchScope,
   VERSION,
 } from "@chensterman/grapevine-core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-
-const ALL_REPOS = "*";
 
 const INSTRUCTIONS = `grapevine holds notes from teammates' coding-agent sessions: what they worked on, decisions they made, approaches that failed, and open questions, indexed by the files they changed.
 
@@ -34,7 +31,9 @@ const scopeFields = {
   repo: z
     .string()
     .optional()
-    .describe('Repo id like "github.com/org/repo". Use "*" to search every repo. Defaults to the repo at cwd.'),
+    .describe(
+      'Repo id like "github.com/org/repo". Use "*" to search every repo. Defaults to the repo at cwd, or the repos checked out inside it, plus the repos of any paths you pass.',
+    ),
 };
 
 function text(value: string) {
@@ -48,13 +47,8 @@ export function createGrapevineServer({
 }: ServerOptions): McpServer {
   const server = new McpServer({ name: "grapevine", version: VERSION }, { instructions: INSTRUCTIONS });
 
-  const scope = (cwd?: string, repo?: string): { identity: RepoIdentity; repo?: string } => {
-    const identity = readRepoIdentity(cwd ?? defaultCwd);
-    if (repo === ALL_REPOS) return { identity, repo: undefined };
-    return { identity, repo: repo ?? identity.repo };
-  };
-  const relativize = (root: string, paths: string[]) =>
-    paths.map((path) => toRepoRelative(root, path)).filter((path): path is string => path !== null);
+  const scopeOf = (cwd?: string, repo?: string, paths?: string[]) =>
+    resolveScope({ cwd: cwd ?? defaultCwd, repo, paths });
 
   server.registerTool(
     "context_for",
@@ -70,16 +64,11 @@ export function createGrapevineServer({
       },
     },
     async ({ paths, query, limit, cwd, repo }) => {
-      const { identity, repo: scopedRepo } = scope(cwd, repo);
-      const results = await store.search({
-        repo: scopedRepo,
-        paths: relativize(identity.root, paths ?? []),
-        text: query,
-        limit: limit ?? 5,
-      });
+      const scope = scopeOf(cwd, repo, paths);
+      const results = await searchScope(store, scope, { text: query, limit: limit ?? 5 });
       return text(
         results.length
-          ? formatResults(results, { changedSince: changedSinceIn(identity) })
+          ? formatResults(results, { changedSince: changedSinceIn(scope.checkouts) })
           : "No teammate context found for these paths or this topic.",
       );
     },
@@ -93,9 +82,9 @@ export function createGrapevineServer({
       inputSchema: { limit: z.number().int().min(1).max(50).optional(), ...scopeFields },
     },
     async ({ limit, cwd, repo }) => {
-      const { identity, repo: scopedRepo } = scope(cwd, repo);
-      const records = await store.recent({ repo: scopedRepo, limit: limit ?? 10 });
-      const changedSince = changedSinceIn(identity);
+      const scope = scopeOf(cwd, repo);
+      const records = await store.recent({ repos: scope.repos, limit: limit ?? 10 });
+      const changedSince = changedSinceIn(scope.checkouts);
       return text(
         records.length
           ? records.map((record) => formatRecord(record, { changedSince })).join("\n\n")
@@ -112,8 +101,7 @@ export function createGrapevineServer({
       inputSchema: { path: z.string().describe("File or directory."), ...scopeFields },
     },
     async ({ path, cwd, repo }) => {
-      const { identity, repo: scopedRepo } = scope(cwd, repo);
-      const results = await store.search({ repo: scopedRepo, paths: relativize(identity.root, [path]), limit: 50 });
+      const results = await searchScope(store, scopeOf(cwd, repo, [path]), { limit: 50 });
       const byAuthor = new Map<string, { count: number; latestTask: string; latestAt: string }>();
       for (const { record, matchedPaths } of results) {
         if (matchedPaths.length === 0) continue;

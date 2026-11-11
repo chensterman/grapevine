@@ -5,6 +5,7 @@ export * from "./format.ts";
 export * from "./git.ts";
 export * from "./rank.ts";
 export * from "./redact.ts";
+export * from "./scope.ts";
 export * from "./store.ts";
 export * from "./summarize.ts";
 export * from "./transcript.ts";

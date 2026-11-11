@@ -17,6 +17,7 @@ function record(id: string, paths: string[], daysAgo: number): ContextRecord {
     decisions: [],
     deadEnds: [],
     openQuestions: [],
+    pending: [],
     status: "done",
   };
 }

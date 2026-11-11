@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changedSinceRecord, issueFromBranch, normalizeRemote, readGitInfo, toRepoRelative } from "../src/git.ts";
+import {
+  changedSinceRecord,
+  createPathLocator,
+  issueFromBranch,
+  normalizeRemote,
+  readGitInfo,
+  readRepoIdentity,
+  toRepoRelative,
+} from "../src/git.ts";
+import { multiRepoWorkspace } from "./workspace.ts";
 
 describe("normalizeRemote", () => {
   test.each([
@@ -59,6 +68,40 @@ describe("readGitInfo", () => {
     const info = readGitInfo(dir);
     expect(info.repo).toStartWith("local/grapevine-nogit-");
     expect(info.changedPaths).toEqual([]);
+  });
+
+  test("uses the global git identity as the author outside git", () => {
+    const dir = mkdtempSync(join(tmpdir(), "grapevine-nogit-"));
+    const config = join(dir, "gitconfig");
+    writeFileSync(config, "[user]\n\temail = global@acme.com\n");
+    const before = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = config;
+    try {
+      expect(readGitInfo(dir).author).toBe("global@acme.com");
+    } finally {
+      if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = before;
+    }
+  });
+});
+
+describe("createPathLocator", () => {
+  test("finds each file's own checkout, including worktrees and files that don't exist yet", () => {
+    const dir = multiRepoWorkspace();
+    const home = readRepoIdentity(dir);
+    const locate = createPathLocator(home);
+    expect(locate(join(dir, "app", "not", "created", "yet.ts"))).toEqual({
+      root: join(dir, "app"),
+      repo: "github.com/acme/app",
+      path: "not/created/yet.ts",
+    });
+    expect(locate(".worktrees/app-fix/README.md")).toEqual({
+      root: join(dir, ".worktrees", "app-fix"),
+      repo: "github.com/acme/app",
+      path: "README.md",
+    });
+    expect(locate("notes.md")).toEqual({ ...home, path: "notes.md" });
+    expect(locate("/somewhere/else.ts")).toBeNull();
   });
 });
 

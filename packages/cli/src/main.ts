@@ -8,6 +8,7 @@ import * as claudeCode from "@chensterman/grapevine-adapter-claude-code";
 import * as codex from "@chensterman/grapevine-adapter-codex";
 import * as cursor from "@chensterman/grapevine-adapter-cursor";
 import {
+  ALL_REPOS,
   capture,
   changedSinceIn,
   createSummarizer,
@@ -22,14 +23,14 @@ import {
   type KeySources,
   loadConfig,
   loadCredentials,
-  readRepoIdentity,
+  resolveScope,
   resolveSummarizer,
   saveCredential,
   type Store,
   type Summarizer,
   type SummarizerProvider,
+  searchScope,
   storePath,
-  toRepoRelative,
   type Transcript,
   VERSION,
 } from "@chensterman/grapevine-core";
@@ -150,9 +151,12 @@ function summarizerFor(ctx: Context, override?: string): Summarizer {
   }
 }
 
-function scopeRepo(cwd: string, values: { repo?: string; "all-repos"?: boolean }) {
-  const identity = readRepoIdentity(cwd);
-  return { identity, repo: values["all-repos"] ? undefined : (values.repo ?? identity.repo) };
+function scopeOf(cwd: string, values: { repo?: string; "all-repos"?: boolean; path?: string[] }) {
+  return resolveScope({
+    cwd,
+    repo: values["all-repos"] ? ALL_REPOS : values.repo,
+    paths: (values.path ?? []).map((path) => resolve(cwd, path)),
+  });
 }
 
 async function commandCapture(ctx: Context, args: string[]): Promise<void> {
@@ -174,7 +178,7 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
   const summarizer = summarizerFor(ctx, values.summarizer);
   const store = openStore(ctx);
   try {
-    const record = await capture({
+    const records = await capture({
       transcript,
       agent: values.agent,
       store,
@@ -186,12 +190,16 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
       issuePattern: ctx.config.capture.issuePattern,
       onWarning: log,
     });
-    if (!record) {
+    if (records.length === 0) {
       log(`skipped ${transcriptPath}: no user messages`);
       return;
     }
-    if (values.json) console.log(JSON.stringify(record, null, 2));
-    else log(`captured ${record.id} in ${record.repo} with ${summarizer.name}: ${record.task}`);
+    if (values.json) console.log(JSON.stringify(records, null, 2));
+    else {
+      for (const record of records) {
+        log(`captured ${record.id} in ${record.repo} with ${summarizer.name}: ${record.task}`);
+      }
+    }
   } finally {
     store.close();
   }
@@ -256,16 +264,16 @@ async function commandSearch(ctx: Context, args: string[]): Promise<void> {
       json: { type: "boolean", default: false },
     },
   });
-  const cwd = process.cwd();
-  const { identity, repo } = scopeRepo(cwd, values);
-  const paths = (values.path ?? [])
-    .map((path) => toRepoRelative(identity.root, resolve(cwd, path)))
-    .filter((path): path is string => path !== null);
+  const scope = scopeOf(process.cwd(), values);
   const store = openStore(ctx);
   try {
-    const results = await store.search({ repo, paths, text: positionals.join(" "), limit: Number(values.limit) });
+    const results = await searchScope(store, scope, { text: positionals.join(" "), limit: Number(values.limit) });
     if (values.json) console.log(JSON.stringify(results, null, 2));
-    else console.log(results.length ? formatResults(results, { changedSince: changedSinceIn(identity) }) : "No matching records.");
+    else {
+      console.log(
+        results.length ? formatResults(results, { changedSince: changedSinceIn(scope.checkouts) }) : "No matching records.",
+      );
+    }
   } finally {
     store.close();
   }
@@ -281,11 +289,11 @@ async function commandRecent(ctx: Context, args: string[]): Promise<void> {
       json: { type: "boolean", default: false },
     },
   });
-  const { identity, repo } = scopeRepo(process.cwd(), values);
+  const scope = scopeOf(process.cwd(), values);
   const store = openStore(ctx);
   try {
-    const records = await store.recent({ repo, limit: Number(values.limit) });
-    const changedSince = changedSinceIn(identity);
+    const records = await store.recent({ repos: scope.repos, limit: Number(values.limit) });
+    const changedSince = changedSinceIn(scope.checkouts);
     if (values.json) console.log(JSON.stringify(records, null, 2));
     else {
       console.log(

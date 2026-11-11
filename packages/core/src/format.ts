@@ -28,6 +28,14 @@ function section(title: string, items: RecordItem[], changed: Set<string>): stri
   return items.length ? [`${title}:`, ...items.map(line)] : [];
 }
 
+/** Pending items describe a moment, like a review being awaited, so they are hidden once the record is older than this. */
+export const PENDING_MAX_AGE_DAYS = 7;
+
+function pendingIsFresh(record: ContextRecord, now: Date): boolean {
+  const ageMs = now.getTime() - Date.parse(record.updatedAt);
+  return !Number.isNaN(ageMs) && ageMs <= PENDING_MAX_AGE_DAYS * 86_400_000;
+}
+
 export function formatRecord(record: ContextRecord, options: FormatOptions = {}): string {
   const now = options.now ?? new Date();
   const changedPaths = options.changedSince?.(record) ?? [];
@@ -50,6 +58,7 @@ export function formatRecord(record: ContextRecord, options: FormatOptions = {})
     ...section("Decisions", record.decisions, changed),
     ...section("Dead ends", record.deadEnds, changed),
     ...section("Open questions", record.openQuestions, changed),
+    ...(pendingIsFresh(record, now) ? section("Pending when last captured", record.pending, changed) : []),
     `id: ${record.id}`,
   ].join("\n");
 }

@@ -17,6 +17,7 @@ const record: ContextRecord = {
   ],
   deadEnds: [],
   openQuestions: [],
+  pending: [{ text: "PR 12 is waiting for a review", paths: [] }],
   status: "done",
 };
 
@@ -30,5 +31,16 @@ describe("formatRecord", () => {
 
   test("shows no markers without changes", () => {
     expect(formatRecord(record)).not.toContain("changed since");
+  });
+
+  test("shows pending items only while the record is fresh", () => {
+    const day = 86_400_000;
+    const capturedAt = Date.parse(record.updatedAt);
+    expect(formatRecord(record, { now: new Date(capturedAt + 6 * day) })).toContain(
+      "Pending when last captured:\n- PR 12 is waiting for a review",
+    );
+    const stale = formatRecord(record, { now: new Date(capturedAt + 8 * day) });
+    expect(stale).not.toContain("PR 12");
+    expect(stale).toContain("- Capped backoff");
   });
 });

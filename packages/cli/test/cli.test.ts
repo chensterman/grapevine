@@ -3,6 +3,7 @@ import type { ContextRecord } from "@chensterman/grapevine-core";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { multiRepoWorkspace } from "../../core/test/workspace.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "main.ts");
 const FIXTURE = join(import.meta.dir, "..", "..", "adapter-claude-code", "test", "fixtures", "session.jsonl");
@@ -83,7 +84,8 @@ describe("grapevine CLI", () => {
 
     const captured = run(["capture", "--transcript", transcript, "--summarizer", "heuristic", "--json"]);
     expect(captured.code).toBe(0);
-    const record = JSON.parse(captured.stdout) as ContextRecord;
+    const [record, ...others] = JSON.parse(captured.stdout) as [ContextRecord];
+    expect(others).toEqual([]);
     expect(record.repo).toBe("github.com/acme/app");
     expect(record.branch).toBe("leon/eng-42-retry-backoff");
     expect(record.task).toBe("Fix the webhook retry loop in src/webhooks/retry.ts so it backs off exponentially.");
@@ -92,8 +94,8 @@ describe("grapevine CLI", () => {
 
     const recaptured = JSON.parse(
       run(["capture", "--transcript", transcript, "--summarizer", "heuristic", "--json"]).stdout,
-    ) as ContextRecord;
-    expect(recaptured.id).toBe(record.id);
+    ) as ContextRecord[];
+    expect(recaptured.map((again) => again.id)).toEqual([record.id]);
 
     const byPath = run(["search", "-p", "webhooks/retry.ts", "--json"], { cwd: join(repo, "src") });
     expect(byPath.code).toBe(0);
@@ -105,6 +107,26 @@ describe("grapevine CLI", () => {
       "No matching records.",
     );
     expect(run(["recent", "--all-repos"]).stdout).toContain("Fix the webhook retry loop");
+  });
+
+  test("a session in a workspace folder outside git is recorded under the repo it changed", () => {
+    const { run } = sandbox();
+    const workspace = multiRepoWorkspace();
+    const transcript = join(workspace, "session.jsonl");
+    writeFileSync(transcript, readFileSync(FIXTURE, "utf8").replaceAll("/work/app", join(workspace, "app")));
+
+    const captured = run(["capture", "--transcript", transcript, "--cwd", workspace, "--summarizer", "heuristic", "--json"]);
+    const records = JSON.parse(captured.stdout) as ContextRecord[];
+    expect(records.map((record) => [record.repo, record.branch, record.author, record.paths.sort()])).toEqual([
+      ["github.com/acme/app", "main", "dev@acme.com", ["src/webhooks/backoff.ts", "src/webhooks/retry.ts"]],
+    ]);
+
+    const byPath = run(["search", "-p", "app/src/webhooks/retry.ts", "--json"], { cwd: workspace });
+    expect((JSON.parse(byPath.stdout) as { record: ContextRecord }[]).map((result) => result.record.id)).toEqual([
+      records[0]!.id,
+    ]);
+    expect(run(["recent"], { cwd: workspace }).stdout).toContain("### Fix the webhook retry loop");
+    expect(run(["recent"], { cwd: join(workspace, "lib") }).stdout).toContain("No sessions recorded yet.");
   });
 
   test("hook captures in the background and throttles mid-session captures", async () => {

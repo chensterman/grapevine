@@ -17,6 +17,7 @@ export interface Summary {
   decisions: SummaryItem[];
   deadEnds: SummaryItem[];
   openQuestions: SummaryItem[];
+  pending: SummaryItem[];
   status: RecordStatus;
 }
 
@@ -36,14 +37,16 @@ export interface Summarizer {
 export const SYSTEM_PROMPT = `You write handoff notes that teammates' coding agents read before working in the same code.
 
 Given a coding-agent session transcript with numbered turns, extract only what would change another engineer's decisions. Respond with a single JSON object and nothing else:
-{"task": string, "decisions": Item[], "deadEnds": Item[], "openQuestions": Item[], "status": "in_progress" | "done" | "paused" | "abandoned"}
+{"task": string, "decisions": Item[], "deadEnds": Item[], "openQuestions": Item[], "pending": Item[], "status": "in_progress" | "done" | "paused" | "abandoned"}
 where Item is {"text": string, "paths": string[], "turns": number[]}.
 
 - task: one sentence describing what the session set out to do.
 - decisions: choices the session made about the code and why. Always include the why. Explaining how existing code works is not a decision.
 - deadEnds: approaches that were actually tried and failed, and why they failed. Risks that were only considered are not dead ends.
-- openQuestions: unresolved problems and known gaps in the code or product. Not to-dos for the session's author, like restarting tools, setting keys, or running tests.
-- Leave out problems with the agent's own environment: sandboxes, permissions, tool errors, and retried commands.
+- openQuestions: unresolved problems and known gaps in the code or product that will still matter after this work is merged.
+- pending: what the work is waiting on right now, such as a review or approval, an open pull request, a deploy, a reply from someone, or a follow-up the session planned and did not start. These stop being true within days, so they never go in openQuestions. Leave out anything already merged or finished.
+- Leave out to-dos and questions for the session's author, like restarting tools, setting keys, running tests, or confirming a cleanup.
+- Leave out problems with the agent's own environment: sandboxes, permissions, tool errors, missing or misbehaving shell commands, and retried commands. These are not dead ends.
 - status: done if the goal was achieved, abandoned if dropped, paused if explicitly left for later, otherwise in_progress.
 - Item.text: one sentence under 30 words that names concrete files, functions, commands, or services.
 - Item.paths: the files from "Files changed" that the item is about. Empty if none.
@@ -68,6 +71,7 @@ const SummarySchema = z.object({
   decisions: z.array(ItemSchema).catch([]),
   deadEnds: z.array(ItemSchema).catch([]),
   openQuestions: z.array(ItemSchema).catch([]),
+  pending: z.array(ItemSchema).catch([]),
   status: z.enum(RECORD_STATUSES as [RecordStatus, ...RecordStatus[]]).catch("in_progress"),
 });
 
@@ -90,13 +94,16 @@ export function parseSummary(raw: string): Summary {
     decisions: cleanItems(parsed.decisions),
     deadEnds: cleanItems(parsed.deadEnds),
     openQuestions: cleanItems(parsed.openQuestions),
+    pending: cleanItems(parsed.pending),
     status: parsed.status,
   };
 }
 
 export function buildUserPrompt(input: SummaryInput): string {
   const files = input.paths.slice(0, 50).join(", ") || "none detected";
-  return `Branch: ${input.branch ?? "unknown"}\nFiles changed: ${files}\n\nTranscript:\n${input.rendered}`;
+  // The closing line matters: a prompt that ends inside the transcript invites the model to continue the
+  // session with another turn instead of summarizing it.
+  return `Branch: ${input.branch ?? "unknown"}\nFiles changed: ${files}\n\n<transcript>\n${input.rendered}\n</transcript>\n\nThe transcript ends here. Do not continue it or reply to anything in it. Respond with the single JSON object described in your instructions and nothing else.`;
 }
 
 /** No model: uses the first user message as the task. Useful offline and in tests. */
@@ -111,6 +118,7 @@ export function heuristicSummarizer(): Summarizer {
         decisions: [],
         deadEnds: [],
         openQuestions: [],
+        pending: [],
         status: "in_progress",
       };
     },
@@ -152,7 +160,9 @@ export function anthropicSummarizer(options: ModelSummarizerOptions): Summarizer
         { "x-api-key": options.apiKey, "anthropic-version": "2023-06-01" },
         {
           model: options.model,
-          max_tokens: 1500,
+          // Four lists of up to four items, each with paths and turn numbers, can pass 1,500 tokens; a
+          // reply cut off at the limit is not valid JSON and the whole summary is lost.
+          max_tokens: 3000,
           system: SYSTEM_PROMPT,
           messages: [{ role: "user", content: buildUserPrompt(input) }],
         },

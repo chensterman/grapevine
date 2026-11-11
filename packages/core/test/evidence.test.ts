@@ -26,6 +26,7 @@ describe("verifySummary", () => {
       ],
       deadEnds: [item("Fixed 1s delay overwhelmed the endpoint", [])],
       openQuestions: [item("Should backoff cap at 30s?", [9])],
+      pending: [item("Jitter change is waiting for review", [2]), item("Deploy is waiting for approval", [3])],
     };
 
     const verified = verifySummary(summary, transcript, "/repo", ["src/webhooks/retry.ts"]);
@@ -34,6 +35,7 @@ describe("verifySummary", () => {
     ]);
     expect(verified.deadEnds).toEqual([]);
     expect(verified.openQuestions).toEqual([]);
-    expect(verified.dropped).toBe(3);
+    expect(verified.pending).toEqual([{ text: "Jitter change is waiting for review", paths: [] }]);
+    expect(verified.dropped).toBe(4);
   });
 });

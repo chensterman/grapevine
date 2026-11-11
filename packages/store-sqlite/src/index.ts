@@ -14,13 +14,13 @@ import {
   type Store,
 } from "@chensterman/grapevine-core";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const CANDIDATE_LIMIT = 200;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS records (
+const recordsTable = (name: string) => `
+CREATE TABLE IF NOT EXISTS ${name} (
   id TEXT PRIMARY KEY,
-  session_key TEXT NOT NULL UNIQUE,
+  session_key TEXT NOT NULL,
   repo TEXT NOT NULL,
   branch TEXT,
   pr TEXT,
@@ -35,8 +35,18 @@ CREATE TABLE IF NOT EXISTS records (
   dead_ends TEXT NOT NULL,
   open_questions TEXT NOT NULL,
   transcript_ref TEXT,
-  commit_sha TEXT
-);
+  commit_sha TEXT,
+  pending TEXT NOT NULL DEFAULT '[]',
+  UNIQUE (session_key, repo)
+);`;
+
+/** Columns a version 2 table has, copied as they are when the table is rebuilt. */
+const V2_COLUMNS =
+  "id, session_key, repo, branch, pr, issue, author, agent, started_at, updated_at, task, status, decisions, " +
+  "dead_ends, open_questions, transcript_ref, commit_sha";
+
+/** Pending items are left out of the full-text index: they describe a moment, so they should not drive retrieval. */
+const SCHEMA = `${recordsTable("records")}
 CREATE INDEX IF NOT EXISTS records_repo_updated ON records (repo, updated_at DESC);
 CREATE TABLE IF NOT EXISTS record_paths (
   record_id TEXT NOT NULL REFERENCES records (id) ON DELETE CASCADE,
@@ -76,6 +86,7 @@ interface RecordRow {
   open_questions: string;
   transcript_ref: string | null;
   commit_sha: string | null;
+  pending: string;
 }
 
 /** `packages/core/src/a.ts` -> `packages/core`, `src/a.ts` -> `src`, `a.ts` -> `a.ts`. */
@@ -95,27 +106,35 @@ export function toFtsQuery(text: string): string | null {
   return tokens.length ? tokens.map((token) => `"${token}"`).join(" OR ") : null;
 }
 
+/** Matches every repo when `$repos` is null, otherwise the repos in its JSON array. Expects `records` aliased as `r`. */
+const IN_REPOS = "($repos IS NULL OR r.repo IN (SELECT value FROM json_each($repos)))";
+
+const repoFilter = (repos: string[] | undefined) => (repos ? JSON.stringify(repos) : null);
+
 class SqliteStore implements Store {
   constructor(private readonly db: Database) {}
 
   async upsert(record: ContextRecord): Promise<void> {
     this.db.transaction(() => {
       const existing = this.db
-        .query<{ id: string }, { sessionKey: string }>("SELECT id FROM records WHERE session_key = $sessionKey")
-        .get({ sessionKey: record.sessionKey });
+        .query<{ id: string }, { sessionKey: string; repo: string }>(
+          "SELECT id FROM records WHERE session_key = $sessionKey AND repo = $repo",
+        )
+        .get({ sessionKey: record.sessionKey, repo: record.repo });
       const id = existing?.id ?? record.id;
       this.db
         .query(
           `INSERT INTO records (id, session_key, repo, branch, pr, issue, author, agent, started_at, updated_at,
-             task, status, decisions, dead_ends, open_questions, transcript_ref, commit_sha)
+             task, status, decisions, dead_ends, open_questions, pending, transcript_ref, commit_sha)
            VALUES ($id, $sessionKey, $repo, $branch, $pr, $issue, $author, $agent, $startedAt, $updatedAt,
-             $task, $status, $decisions, $deadEnds, $openQuestions, $transcriptRef, $commit)
+             $task, $status, $decisions, $deadEnds, $openQuestions, $pending, $transcriptRef, $commit)
            ON CONFLICT (id) DO UPDATE SET
              repo = excluded.repo, branch = excluded.branch, pr = excluded.pr, issue = excluded.issue,
              author = excluded.author, agent = excluded.agent, started_at = excluded.started_at,
              updated_at = excluded.updated_at, task = excluded.task, status = excluded.status,
              decisions = excluded.decisions, dead_ends = excluded.dead_ends,
-             open_questions = excluded.open_questions, transcript_ref = excluded.transcript_ref,
+             open_questions = excluded.open_questions, pending = excluded.pending,
+             transcript_ref = excluded.transcript_ref,
              commit_sha = excluded.commit_sha`,
         )
         .run({
@@ -134,6 +153,7 @@ class SqliteStore implements Store {
           decisions: JSON.stringify(record.decisions),
           deadEnds: JSON.stringify(record.deadEnds),
           openQuestions: JSON.stringify(record.openQuestions),
+          pending: JSON.stringify(record.pending),
           transcriptRef: record.transcriptRef ?? null,
           commit: record.commit ?? null,
         });
@@ -164,31 +184,33 @@ class SqliteStore implements Store {
     return row ? (this.hydrate([row])[0] ?? null) : null;
   }
 
-  async getBySession(sessionKey: string): Promise<ContextRecord | null> {
-    const row = this.db
-      .query<RecordRow, { sessionKey: string }>("SELECT * FROM records WHERE session_key = $sessionKey")
-      .get({ sessionKey });
-    return row ? (this.hydrate([row])[0] ?? null) : null;
+  async listBySession(sessionKey: string): Promise<ContextRecord[]> {
+    const rows = this.db
+      .query<RecordRow, { sessionKey: string }>("SELECT * FROM records WHERE session_key = $sessionKey ORDER BY repo")
+      .all({ sessionKey });
+    return this.hydrate(rows);
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return this.db.transaction(() => this.deleteRow(id))();
   }
 
   async deleteBySession(sessionKey: string): Promise<boolean> {
     return this.db.transaction(() => {
-      const row = this.db
+      const rows = this.db
         .query<{ id: string }, { sessionKey: string }>("SELECT id FROM records WHERE session_key = $sessionKey")
-        .get({ sessionKey });
-      if (!row) return false;
-      this.db.query("DELETE FROM records_fts WHERE record_id = $id").run({ id: row.id });
-      this.db.query("DELETE FROM records WHERE id = $id").run({ id: row.id });
-      return true;
+        .all({ sessionKey });
+      for (const row of rows) this.deleteRow(row.id);
+      return rows.length > 0;
     })();
   }
 
   async recent(query: RecentQuery): Promise<ContextRecord[]> {
     const rows = this.db
-      .query<RecordRow, { repo: string | null; limit: number }>(
-        "SELECT * FROM records WHERE ($repo IS NULL OR repo = $repo) ORDER BY updated_at DESC LIMIT $limit",
+      .query<RecordRow, { repos: string | null; limit: number }>(
+        `SELECT * FROM records r WHERE ${IN_REPOS} ORDER BY updated_at DESC LIMIT $limit`,
       )
-      .all({ repo: query.repo ?? null, limit: query.limit ?? 10 });
+      .all({ repos: repoFilter(query.repos), limit: query.limit ?? 10 });
     return this.hydrate(rows);
   }
 
@@ -196,10 +218,10 @@ class SqliteStore implements Store {
     const limit = query.limit ?? 5;
     const paths = (query.paths ?? []).map(normalizePath).filter(Boolean);
     const fts = query.text ? toFtsQuery(query.text) : null;
-    const repo = query.repo ?? null;
+    const repos = repoFilter(query.repos);
 
     if (paths.length === 0 && !fts) {
-      const recent = await this.recent({ repo: query.repo, limit: limit + 1 });
+      const recent = await this.recent({ repos: query.repos, limit: limit + 1 });
       return recent
         .filter((record) => record.sessionKey !== query.excludeSessionKey)
         .slice(0, limit)
@@ -207,13 +229,13 @@ class SqliteStore implements Store {
     }
 
     const ids = new Set<string>();
-    const byPrefix = this.db.query<{ record_id: string }, { like: string; repo: string | null; limit: number }>(
+    const byPrefix = this.db.query<{ record_id: string }, { like: string; repos: string | null; limit: number }>(
       `SELECT DISTINCT p.record_id FROM record_paths p JOIN records r ON r.id = p.record_id
-       WHERE p.path LIKE $like ESCAPE '\\' AND ($repo IS NULL OR r.repo = $repo)
+       WHERE p.path LIKE $like ESCAPE '\\' AND ${IN_REPOS}
        ORDER BY r.updated_at DESC LIMIT $limit`,
     );
     for (const prefix of new Set(paths.map(pathPrefix))) {
-      for (const row of byPrefix.all({ like: `${escapeLike(prefix)}%`, repo, limit: CANDIDATE_LIMIT })) {
+      for (const row of byPrefix.all({ like: `${escapeLike(prefix)}%`, repos, limit: CANDIDATE_LIMIT })) {
         ids.add(row.record_id);
       }
     }
@@ -221,13 +243,13 @@ class SqliteStore implements Store {
     const textScores = new Map<string, number>();
     if (fts) {
       const rows = this.db
-        .query<{ record_id: string; rank: number }, { fts: string; repo: string | null; limit: number }>(
+        .query<{ record_id: string; rank: number }, { fts: string; repos: string | null; limit: number }>(
           `SELECT records_fts.record_id AS record_id, bm25(records_fts) AS rank
            FROM records_fts JOIN records r ON r.id = records_fts.record_id
-           WHERE records_fts MATCH $fts AND ($repo IS NULL OR r.repo = $repo)
+           WHERE records_fts MATCH $fts AND ${IN_REPOS}
            ORDER BY rank LIMIT $limit`,
         )
-        .all({ fts, repo, limit: CANDIDATE_LIMIT });
+        .all({ fts, repos, limit: CANDIDATE_LIMIT });
       const best = rows[0]?.rank ?? 0;
       for (const row of rows) {
         ids.add(row.record_id);
@@ -242,6 +264,12 @@ class SqliteStore implements Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /** Call inside a transaction. The record's paths go with it through the foreign key. */
+  private deleteRow(id: string): boolean {
+    this.db.query("DELETE FROM records_fts WHERE record_id = $id").run({ id });
+    return this.db.query("DELETE FROM records WHERE id = $id").run({ id }).changes > 0;
   }
 
   private loadMany(ids: string[]): ContextRecord[] {
@@ -279,6 +307,7 @@ class SqliteStore implements Store {
       decisions: parseItems(row.decisions),
       deadEnds: parseItems(row.dead_ends),
       openQuestions: parseItems(row.open_questions),
+      pending: parseItems(row.pending),
       status: row.status as RecordStatus,
       transcriptRef: row.transcript_ref ?? undefined,
       commit: row.commit_sha ?? undefined,
@@ -286,15 +315,34 @@ class SqliteStore implements Store {
   }
 }
 
+/**
+ * Brings an older database up to date. It checks columns instead of the stored version, because an
+ * older grapevine opening the same file writes its own version number back.
+ */
+function migrate(db: Database): void {
+  const columns = db.query<{ name: string }, []>("PRAGMA table_info(records)").all().map((column) => column.name);
+  if (columns.length > 0 && !columns.includes("commit_sha")) db.exec("ALTER TABLE records ADD COLUMN commit_sha TEXT");
+  if (columns.length > 0 && !columns.includes("pending")) {
+    // Before version 3 a session had one record, enforced by UNIQUE on session_key. SQLite can't drop a
+    // constraint, so copy the rows into a table with the new one. The paths table keeps pointing at `records`.
+    db.exec(`
+      DROP TABLE IF EXISTS records_next;
+      ${recordsTable("records_next")}
+      INSERT INTO records_next (${V2_COLUMNS}) SELECT ${V2_COLUMNS} FROM records;
+      DROP TABLE records;
+      ALTER TABLE records_next RENAME TO records;
+    `);
+  }
+  db.exec(SCHEMA);
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
 export function openSqliteStore(path: string): Store {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true, strict: true });
-  db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
-  db.transaction(() => {
-    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-    db.exec(SCHEMA);
-    if (version === 1) db.exec("ALTER TABLE records ADD COLUMN commit_sha TEXT");
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-  }).immediate();
+  // Foreign keys stay off while migrating: dropping the old records table with them on would delete every path row.
+  db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = OFF;");
+  db.transaction(() => migrate(db)).immediate();
+  db.exec("PRAGMA foreign_keys = ON;");
   return new SqliteStore(db);
 }

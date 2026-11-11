@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { multiRepoWorkspace } from "../../core/test/workspace.ts";
 import { createGrapevineServer } from "../src/index.ts";
 
 const cwd = mkdtempSync(join(tmpdir(), "grapevine-mcp-"));
@@ -24,6 +25,7 @@ function record(id: string, overrides: Partial<ContextRecord> = {}): ContextReco
     decisions: [{ text: "Use jitter because retries synchronized", paths: ["src/webhooks/retry.ts"] }],
     deadEnds: [],
     openQuestions: [],
+    pending: [],
     status: "done",
     ...overrides,
   };
@@ -98,6 +100,34 @@ describe("grapevine MCP server", () => {
     const result = textOf(await client.callTool({ name: "who_touches", arguments: { path: "src/webhooks" } }));
     expect(result).toContain("dev@acme.com: 1 session");
     expect(result).toContain("pat@acme.com: 1 session");
+  });
+
+  test("a workspace folder outside git covers the checkouts inside it", async () => {
+    const client = await connect();
+    const workspace = multiRepoWorkspace();
+    await store.upsert(record("app", { repo: "github.com/acme/app", task: "In app" }));
+    await store.upsert(record("lib", { repo: "github.com/acme/lib", task: "In lib" }));
+
+    const context = textOf(
+      await client.callTool({ name: "context_for", arguments: { cwd: workspace, paths: ["app/src/webhooks/retry.ts"] } }),
+    );
+    expect(context).toContain("In app");
+    expect(context).not.toContain("In lib");
+    expect(context).not.toContain("Task a");
+
+    const recent = textOf(await client.callTool({ name: "recent_work", arguments: { cwd: workspace } }));
+    expect(recent).toContain("In app");
+    expect(recent).toContain("In lib");
+    expect(recent).not.toContain("Task a");
+    expect(recent).not.toContain("Elsewhere");
+
+    const who = textOf(
+      await client.callTool({
+        name: "who_touches",
+        arguments: { cwd: workspace, path: join(workspace, ".worktrees", "app-fix", "src", "webhooks") },
+      }),
+    );
+    expect(who).toBe("- dev@acme.com: 1 session, latest just now: In app");
   });
 
   test("recent_work lists newest first", async () => {

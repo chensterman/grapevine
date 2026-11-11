@@ -20,6 +20,7 @@ const modelJson = JSON.stringify({
   ],
   deadEnds: [{ text: "Fixed 1s delay still overwhelmed the endpoint", turns: ["#2", "x"] }],
   openQuestions: [],
+  pending: [{ text: "PR 12 is waiting for a review", turns: [4] }],
   status: "done",
 });
 
@@ -31,6 +32,7 @@ describe("parseSummary", () => {
       { text: "Used jitter because synchronized retries caused thundering herds", paths: ["src/retry.ts"], turns: [3] },
     ]);
     expect(summary.deadEnds).toEqual([{ text: "Fixed 1s delay still overwhelmed the endpoint", paths: [], turns: [2] }]);
+    expect(summary.pending).toEqual([{ text: "PR 12 is waiting for a review", paths: [], turns: [4] }]);
     expect(summary.status).toBe("done");
   });
 
@@ -44,6 +46,7 @@ describe("parseSummary", () => {
       decisions: [],
       deadEnds: [],
       openQuestions: [],
+      pending: [],
       status: "in_progress",
     });
   });
@@ -72,6 +75,10 @@ describe("createSummarizer", () => {
     expect(request?.url).toBe("https://api.anthropic.com/v1/messages");
     expect(request?.headers["x-api-key"]).toBe("k");
     expect(request?.body.model).toBe("claude-haiku-4-5");
+    // The prompt must end with an instruction, not the transcript, or the model continues the session.
+    const [message] = request?.body.messages as { content: string }[];
+    expect(message?.content).toContain("<transcript>\nUSER: Fix retries\n</transcript>");
+    expect(message?.content).toEndWith("Respond with the single JSON object described in your instructions and nothing else.");
   });
 
   test("calls OpenAI-compatible endpoints with a custom base URL and key env", async () => {

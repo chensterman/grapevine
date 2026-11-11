@@ -20,6 +20,7 @@ export interface VerifiedItems {
   decisions: RecordItem[];
   deadEnds: RecordItem[];
   openQuestions: RecordItem[];
+  pending: RecordItem[];
   /** Items dropped because no cited turn exists or mentions them. */
   dropped: number;
 }
@@ -48,5 +49,6 @@ export function verifySummary(summary: Summary, transcript: Transcript, root: st
   const decisions = verify(summary.decisions);
   const deadEnds = verify(summary.deadEnds);
   const openQuestions = verify(summary.openQuestions);
-  return { decisions, deadEnds, openQuestions, dropped };
+  const pending = verify(summary.pending);
+  return { decisions, deadEnds, openQuestions, pending, dropped };
 }

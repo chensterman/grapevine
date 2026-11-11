@@ -43,18 +43,21 @@ A record looks like this:
   ],
   "deadEnds": [{ "text": "A fixed 1s delay between retries still overwhelmed the endpoint.", "paths": ["src/webhooks/retry.ts"] }],
   "openQuestions": [],
+  "pending": [{ "text": "PR 212 is waiting for a review from the payments team.", "paths": [] }],
   "status": "done",
   "commit": "3f9c2e1…"
 }
 ```
 
-The model must cite the transcript turns behind each decision, dead end, and open question. Capture drops items whose cited turns don't exist or don't mention them, and keeps only file links to files the session changed. The check catches invented items, not misread ones. When an agent reads a record, grapevine checks which of its files changed in commits after the capture and marks the affected notes "changed since", so the agent checks the current code before trusting them.
+Decisions, dead ends, and open questions are meant to last. `pending` holds what the work was waiting on when it was captured, such as a review, an open pull request, or a planned follow-up. That stops being true within days, so pending items are not searched and agents see them only while the record is less than a week old.
+
+The model must cite the transcript turns behind each item. Capture drops items whose cited turns don't exist or don't mention them, and keeps only file links to files the session changed. The check catches invented items, not misread ones. When an agent reads a record, grapevine checks which of its files changed in commits after the capture and marks the affected notes "changed since", so the agent checks the current code before trusting them.
 
 ### Sharing a session
 
 Sessions are captured only when you ask. Tell your agent "share this session" (or "record this for the team") and it calls grapevine's `share_session` tool. That call lands in the session's transcript, which is how the hook knows the session is opted in; the MCP server itself stores nothing. You can ask at any point: the summary always covers the whole session, including what came before. Say "stop sharing" and the agent calls `stop_sharing`, which stops capture and deletes the session's record.
 
-Once a session is shared, capture is throttled: the Claude Code and Codex `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine summarizes right away, then at most every 15 minutes (configurable), and always when the session ends. Each session has one record that is updated in place. To capture everything without asking, set `capture.mode` to `always`. To capture a finished session after the fact, run `grapevine capture --transcript <file>`.
+Once a session is shared, capture is throttled: the Claude Code and Codex `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine summarizes right away, then at most every 15 minutes (configurable), and always when the session ends. Each session has one record per repo it changed files in, updated in place. Each file is filed under its own checkout, so a session that runs from a folder holding several clones or worktrees is recorded under the right repos, with repo-relative paths. To capture everything without asking, set `capture.mode` to `always`. To capture a finished session after the fact, run `grapevine capture --transcript <file>`.
 
 ## Quick start
 
@@ -107,7 +110,7 @@ grapevine key set openai                         # save a key for grapevine only
 grapevine mcp                                    # MCP server on stdio
 ```
 
-Searches are scoped to the repo you're in (by normalized `origin` URL) unless you pass `--repo` or `--all-repos`.
+Searches are scoped to the repo you're in (by normalized `origin` URL) unless you pass `--repo` or `--all-repos`. A path is searched in the repo it belongs to, wherever you run from. In a folder outside git, the scope is the clones and worktrees up to two levels inside it.
 
 ## MCP tools
 
