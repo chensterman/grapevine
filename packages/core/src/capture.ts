@@ -13,7 +13,7 @@ import {
 import { normalizePath } from "./rank.ts";
 import { redact } from "./redact.ts";
 import type { Store } from "./store.ts";
-import { heuristicSummarizer, type Summarizer, type Summary } from "./summarize.ts";
+import { HEURISTIC, heuristicSummarizer, type Summarizer, type Summary } from "./summarize.ts";
 import { renderTranscript, type Transcript } from "./transcript.ts";
 import type { ContextRecord, RecordItem } from "./types.ts";
 
@@ -210,11 +210,17 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord[]>
       return [{ text: clean(item.text), paths: [...new Set(paths)] }];
     });
 
+  // A capture that had no model to ask must not replace what a model wrote earlier: neither a failed call
+  // nor the heuristic (which runs when the key is missing) knows more than the task and the files.
+  const noModel = failed || options.summarizer.name === HEURISTIC;
+  const keeps = (prior: ContextRecord): boolean =>
+    failed ||
+    (noModel && prior.decisions.length + prior.deadEnds.length + prior.openQuestions.length + prior.pending.length > 0);
+
   const now = (options.now ?? new Date()).toISOString();
   const records = ordered.map((group): ContextRecord => {
     const prior = priorOf(group);
-    // A failed summarizer must not overwrite what a model wrote earlier.
-    const kept = failed ? prior : undefined;
+    const kept = prior && keeps(prior) ? prior : undefined;
     const info = gitOf(group);
     const { branch } = info;
     return {
@@ -241,9 +247,7 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord[]>
   });
   for (const record of records) await store.upsert(record);
   // A record for a repo the session no longer has files in is left over from before its files were
-  // known, or from before the repo's identity changed.
-  if (!failed) {
-    for (const prior of existing) if (!groups.has(prior.repo)) await store.delete(prior.id);
-  }
+  // known, or from before the repo's identity changed. One a model wrote stays until a model replaces it.
+  for (const prior of existing) if (!groups.has(prior.repo) && !keeps(prior)) await store.delete(prior.id);
   return records;
 }

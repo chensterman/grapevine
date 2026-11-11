@@ -107,9 +107,11 @@ export function buildUserPrompt(input: SummaryInput): string {
 }
 
 /** No model: uses the first user message as the task. Useful offline and in tests. */
+export const HEURISTIC = "heuristic";
+
 export function heuristicSummarizer(): Summarizer {
   return {
-    name: "heuristic",
+    name: HEURISTIC,
     async summarize({ transcript }) {
       const first = transcript.turns.find((turn) => turn.role === "user" && turn.text.trim());
       const firstLine = first?.text.trim().split("\n")[0] ?? "";

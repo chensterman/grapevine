@@ -125,6 +125,23 @@ describe("capture summaries", () => {
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ id: first!.id, task: "Model task", decisions, status: "done" });
   });
+
+  test("keeps a model's summary when a later capture has no model", async () => {
+    const store = memoryStore();
+    const root = mkdtempSync(join(tmpdir(), "grapevine-capture-"));
+    const git = { root, repo: "r", author: "a", changedPaths: [] };
+    const turns = [{ role: "user" as const, text: "Fix retries" }];
+    const decisions = [{ text: "Capped backoff", paths: [] }];
+    const options = { agent: "test", store, summarizer: heuristicSummarizer(), git };
+    const [first] = await capture({ ...options, transcript: { sessionId: "s4", turns, touchedPaths: [] } });
+    await store.upsert({ ...first!, task: "Model task", decisions, status: "done" });
+
+    // The key went missing, so the heuristic runs. It still records the new file.
+    const transcript = { sessionId: "s4", turns, touchedPaths: [join(root, "src/retry.ts")] };
+    const records = await capture({ ...options, transcript });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ id: first!.id, task: "Model task", decisions, status: "done", paths: ["src/retry.ts"] });
+  });
 });
 
 describe("capture across repos", () => {
