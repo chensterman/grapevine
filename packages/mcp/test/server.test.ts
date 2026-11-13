@@ -34,13 +34,13 @@ function record(id: string, overrides: Partial<ContextRecord> = {}): ContextReco
 let store: Store;
 afterEach(() => store?.close());
 
-async function connect(): Promise<Client> {
+async function connect(refresh?: () => Promise<void>): Promise<Client> {
   store = openSqliteStore(":memory:");
   await store.upsert(record("a"));
   await store.upsert(record("b", { author: "pat@acme.com", paths: ["src/webhooks/backoff.ts"] }));
   await store.upsert(record("c", { repo: "github.com/acme/other", task: "Elsewhere" }));
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await createGrapevineServer({ store, defaultCwd: cwd, summarizerStatus: () => "Summarizer: test" }).connect(
+  await createGrapevineServer({ store, defaultCwd: cwd, summarizerStatus: () => "Summarizer: test", refresh }).connect(
     serverTransport,
   );
   const client = new Client({ name: "test", version: "0.0.0" });
@@ -75,6 +75,22 @@ describe("grapevine MCP server", () => {
     expect(shared).toContain("Summarizer: test");
     expect(textOf(await client.callTool({ name: "summarizer_setup", arguments: {} }))).toBe("Summarizer: test");
     expect(textOf(await client.callTool({ name: "stop_sharing", arguments: {} }))).toContain("Sharing is off");
+  });
+
+  test("refreshes the store before each lookup, and not for the share tools", async () => {
+    let refreshes = 0;
+    const client = await connect(async () => {
+      refreshes += 1;
+      await store.upsert(record(`pulled-${refreshes}`, { task: `Pulled ${refreshes}`, paths: ["docs/pulled.md"] }));
+    });
+    await client.callTool({ name: "share_session", arguments: {} });
+    expect(refreshes).toBe(0);
+
+    const found = textOf(await client.callTool({ name: "context_for", arguments: { paths: ["docs/pulled.md"] } }));
+    expect(found).toContain("### Pulled 1");
+    await client.callTool({ name: "recent_work", arguments: {} });
+    await client.callTool({ name: "who_touches", arguments: { path: "docs/pulled.md" } });
+    expect(refreshes).toBe(3);
   });
 
   test("context_for scopes to the caller's repo and accepts absolute paths", async () => {

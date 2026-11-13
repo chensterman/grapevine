@@ -40,12 +40,15 @@ interface RepoGroup {
   repo: string;
   /** Repo-relative path to the checkout the file was changed in. */
   paths: Map<string, string>;
+  /** The same for files the session read without changing. */
+  read: Map<string, string>;
 }
 
 /** The checkout holding most of the group's files, which supplies its branch and commit. */
 function mainRoot(group: RepoGroup): string | undefined {
   const counts = new Map<string, number>();
-  for (const root of group.paths.values()) counts.set(root, (counts.get(root) ?? 0) + 1);
+  const roots = group.paths.size ? group.paths.values() : group.read.values();
+  for (const root of roots) counts.set(root, (counts.get(root) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
@@ -127,7 +130,7 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord[]>
 
   const groups = new Map<string, RepoGroup>();
   const add = ({ root, repo, path }: LocatedPath) => {
-    const group = groups.get(repo) ?? { repo, paths: new Map() };
+    const group = groups.get(repo) ?? { repo, paths: new Map(), read: new Map() };
     groups.set(repo, group);
     if (!group.paths.has(path) && group.paths.size < MAX_PATHS) group.paths.set(path, root);
   };
@@ -155,7 +158,27 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord[]>
       if (located) add(located);
     }
   }
-  if (groups.size === 0) groups.set(home.repo, { repo: home.repo, paths: new Map() });
+
+  // Files the session only read are recorded too, so a session that investigated without changing anything
+  // is still found by the code it looked at. Reading a repo does not give it a record of its own, except
+  // that a session with no changes gets its one record where it read: in the repo at `cwd` when it read
+  // there, otherwise in the repo it read the most.
+  const reads = new Map<string, Map<string, string>>();
+  for (const path of raw.readPaths ?? []) {
+    const located = locateFile(path);
+    if (!located) continue;
+    const inRepo = reads.get(located.repo) ?? new Map<string, string>();
+    reads.set(located.repo, inRepo);
+    if (inRepo.size < MAX_PATHS) inRepo.set(located.path, located.root);
+  }
+  if (groups.size === 0) {
+    const mostRead = [...reads].sort((a, b) => b[1].size - a[1].size)[0]?.[0];
+    const repo = reads.has(home.repo) || !mostRead ? home.repo : mostRead;
+    groups.set(repo, { repo, paths: new Map(), read: new Map() });
+  }
+  for (const group of groups.values()) {
+    for (const [path, root] of reads.get(group.repo) ?? []) if (!group.paths.has(path)) group.read.set(path, root);
+  }
 
   const ordered = [...groups.values()].sort(
     (a, b) => b.paths.size - a.paths.size || Number(b.repo === home.repo) - Number(a.repo === home.repo),
@@ -223,6 +246,7 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord[]>
     const kept = prior && keeps(prior) ? prior : undefined;
     const info = gitOf(group);
     const { branch } = info;
+    const readPaths = [...group.read.keys()];
     return {
       id: prior?.id ?? crypto.randomUUID(),
       sessionKey,
@@ -236,6 +260,7 @@ export async function capture(options: CaptureOptions): Promise<ContextRecord[]>
       updatedAt: now,
       task: kept?.task ?? (clean(summary.task) || prior?.task || "Untitled session"),
       paths: [...group.paths.keys()],
+      readPaths: readPaths.length ? readPaths : undefined,
       decisions: kept?.decisions ?? itemsFor(verified.decisions, group.repo),
       deadEnds: kept?.deadEnds ?? itemsFor(verified.deadEnds, group.repo),
       openQuestions: kept?.openQuestions ?? itemsFor(verified.openQuestions, group.repo),

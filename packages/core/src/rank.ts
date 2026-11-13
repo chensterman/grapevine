@@ -25,7 +25,9 @@ export function pathMatchScore(query: string, candidate: string): number {
   if (qDir.length > 0 && qDir.join("/") === cDir.join("/")) return 0.5;
   let shared = 0;
   while (shared < qDir.length && shared < cDir.length && qDir[shared] === cDir[shared]) shared += 1;
-  return shared >= 2 ? 0.25 : 0;
+  if (shared >= 2) return 0.25;
+  // A file of the same name in another folder often plays the same role there, like each package's config.
+  return posix.basename(q) === posix.basename(c) ? 0.25 : 0;
 }
 
 export interface PathOverlap {
@@ -67,11 +69,15 @@ export interface Candidate {
   textScore: number;
 }
 
+/** A file a session only read says less about it than one it changed. */
+const READ_WEIGHT = 0.5;
+
 export function rankCandidates(candidates: Candidate[], queryPaths: string[], now = new Date()): ScoredRecord[] {
   return candidates
     .map(({ record, textScore }) => {
       const overlap = pathOverlap(queryPaths, record.paths);
-      const relevance = 2 * overlap.score + textScore;
+      const read = READ_WEIGHT * pathOverlap(queryPaths, record.readPaths ?? []).score;
+      const relevance = 2 * Math.max(overlap.score, read) + textScore;
       const score = relevance * (0.5 + 0.5 * recencyWeight(record.updatedAt, now));
       return { record, score, matchedPaths: overlap.matchedPaths };
     })

@@ -4,7 +4,7 @@ import type { ContextRecord } from "../src/types.ts";
 
 const now = new Date("2026-11-08T00:00:00Z");
 
-function record(id: string, paths: string[], daysAgo: number): ContextRecord {
+function record(id: string, paths: string[], daysAgo = 0): ContextRecord {
   return {
     id,
     sessionKey: `test:${id}`,
@@ -31,6 +31,8 @@ describe("pathMatchScore", () => {
     ["src/webhooks/retry.ts", "src/webhooks/backoff.ts", 0.5],
     ["packages/core/src/a.ts", "packages/core/test/a.test.ts", 0.25],
     ["packages/core/src/a.ts", "packages/cli/src/main.ts", 0],
+    ["agents/acme/tour/conduct.md", "agents/globex/outreach/conduct.md", 0.25],
+    ["conduct.md", "agents/globex/conduct.md", 0.25],
     ["README.md", "package.json", 0],
   ])("%s vs %s = %d", (query, candidate, expected) => {
     expect(pathMatchScore(query, candidate)).toBe(expected);
@@ -65,6 +67,23 @@ describe("rankCandidates", () => {
       now,
     );
     expect(ranked.map((result) => result.record.id)).toEqual(["exact-fresh", "exact-old", "sibling-fresh"]);
+  });
+
+  test("a file a session only read counts for half a changed one and is not reported as matched", () => {
+    const ranked = rankCandidates(
+      [
+        { record: { ...record("read", []), readPaths: ["src/webhooks/retry.ts"] }, textScore: 0 },
+        { record: record("changed", ["src/webhooks/retry.ts"]), textScore: 0 },
+        { record: record("sibling", ["src/webhooks/backoff.ts"]), textScore: 0 },
+      ],
+      ["src/webhooks/retry.ts"],
+      now,
+    );
+    expect(ranked.map((result) => [result.record.id, result.score, result.matchedPaths])).toEqual([
+      ["changed", 2, ["src/webhooks/retry.ts"]],
+      ["read", 1, []],
+      ["sibling", 1, ["src/webhooks/backoff.ts"]],
+    ]);
   });
 
   test("text matches rank without path overlap", () => {

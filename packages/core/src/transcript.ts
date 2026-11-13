@@ -15,6 +15,8 @@ export interface Transcript {
   turns: TranscriptTurn[];
   /** Paths the agent edited, as reported by its tool calls. May be absolute. */
   touchedPaths: string[];
+  /** Paths the agent opened with a file-reading tool. May be absolute. Absent when the agent has no such tool. */
+  readPaths?: string[];
   /** Whether the agent ran shell commands, which can change files its edit tools don't report. */
   ranCommands?: boolean;
   /** The latest grapevine `share_session` or `stop_sharing` call in the session, if any. */

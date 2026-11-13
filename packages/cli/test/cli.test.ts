@@ -71,6 +71,24 @@ function repoWithTranscript(): { repo: string; transcript: string } {
   return { repo, transcript };
 }
 
+/** A sync target module that keeps each record as a JSON file in a folder, standing in for a team's shared place. */
+const FOLDER_TARGET = `
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export function createSyncTarget({ folder }) {
+  mkdirSync(folder, { recursive: true });
+  const file = (id) => join(folder, id + ".json");
+  return {
+    put: async (record) => writeFileSync(file(record.id), JSON.stringify(record)),
+    remove: async (id) => rmSync(file(id), { force: true }),
+    list: async () =>
+      readdirSync(folder).map((name) => ({ id: name.slice(0, -".json".length), version: String(statSync(join(folder, name)).mtimeMs) })),
+    get: async (id) => (existsSync(file(id)) ? JSON.parse(readFileSync(file(id), "utf8")) : null),
+  };
+}
+`;
+
 describe("grapevine CLI", () => {
   test("prints usage", () => {
     const { run } = sandbox();
@@ -307,6 +325,74 @@ describe("grapevine CLI", () => {
     expect(record?.sessionKey).toBe("codex:thread-1");
     expect(record?.paths).toContain("src/webhooks/backoff.ts");
     expect(record?.task).toStartWith("Fix the webhook retry loop");
+  });
+
+  test("shares records through a sync target: a teammate finds a capture, then loses it when sharing stops", async () => {
+    const ana = sandbox();
+    const ben = sandbox();
+    const { repo, transcript } = repoWithTranscript();
+    const folder = join(tempDir("team"), "records");
+    const target = join(tempDir("plugin"), "folder-target.ts");
+    writeFileSync(target, FOLDER_TARGET);
+    const config = JSON.stringify({ capture: { detectPr: false }, sync: { target, options: { folder } } });
+    for (const { grapevineHome } of [ana, ben]) writeFileSync(join(grapevineHome, "config.json"), config);
+
+    expect(ana.run(["status"]).stdout).toContain(`Sync: ${target}. 0 change(s) waiting to be pushed. Nothing pulled yet.`);
+    const captured = ana.run(["capture", "--transcript", transcript, "--summarizer", "heuristic", "--json"]);
+    const [record] = JSON.parse(captured.stdout) as [ContextRecord];
+    const shared = JSON.parse(readFileSync(join(folder, `${record.id}.json`), "utf8")) as ContextRecord;
+    expect(shared).toMatchObject({ id: record.id, task: record.task, paths: [...record.paths].sort() });
+    expect(shared).not.toHaveProperty("transcriptRef");
+
+    // A lookup on the teammate's machine pulls first.
+    const found = ben.run(["search", "-p", "src/webhooks/retry.ts", "--json"], { cwd: repo });
+    expect((JSON.parse(found.stdout) as { record: ContextRecord }[]).map((result) => result.record.id)).toEqual([record.id]);
+    expect(ben.run(["status"]).stdout).toContain("Last pull just now.");
+
+    const stop = {
+      type: "assistant",
+      sessionId: "sess-123",
+      message: { role: "assistant", content: [{ type: "tool_use", id: "t9", name: "mcp__grapevine__stop_sharing", input: {} }] },
+    };
+    writeFileSync(transcript, `${readFileSync(transcript, "utf8")}\n${JSON.stringify(stop)}\n`);
+    const stdin = JSON.stringify({ session_id: "sess-123", transcript_path: transcript, cwd: repo, hook_event_name: "Stop" });
+    expect(ana.run(["hook", "claude-code"], { stdin }).code).toBe(0);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && existsSync(join(folder, `${record.id}.json`))) await Bun.sleep(100);
+    expect(existsSync(join(folder, `${record.id}.json`))).toBe(false);
+
+    expect(ben.run(["sync"]).stdout).toBe("Pushed 0, removed 0.\nPulled 0 new or changed, removed 1.\n");
+    expect(JSON.parse(ben.run(["recent", "--json"], { cwd: repo }).stdout)).toEqual([]);
+  });
+
+  test("a sync target that cannot load never fails a capture or a lookup", () => {
+    const { grapevineHome, run } = sandbox();
+    const { repo, transcript } = repoWithTranscript();
+    writeFileSync(
+      join(grapevineHome, "config.json"),
+      JSON.stringify({ capture: { detectPr: false }, sync: { target: "./missing-target.ts" } }),
+    );
+
+    const captured = run(["capture", "--transcript", transcript, "--summarizer", "heuristic", "--json"]);
+    expect(captured.code).toBe(0);
+    expect(captured.stderr).toContain("sync: push failed");
+    const [record] = JSON.parse(captured.stdout) as [ContextRecord];
+
+    const found = run(["search", "-p", "src/webhooks/retry.ts", "--json"], { cwd: repo });
+    expect(found.code).toBe(0);
+    expect(found.stderr).toContain("sync: pull failed");
+    expect((JSON.parse(found.stdout) as { record: ContextRecord }[]).map((result) => result.record.id)).toEqual([record.id]);
+
+    expect(run(["status"]).stdout).toContain("1 change(s) waiting to be pushed.");
+    expect(run(["sync"]).code).toBe(1);
+  });
+
+  test("sync explains that no target is configured", () => {
+    const { run } = sandbox();
+    expect(run(["status"]).stdout).toContain("Sync: off (records stay on this machine).");
+    const result = run(["sync"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("No sync target is configured");
   });
 
   test("init --dry-run writes nothing", () => {

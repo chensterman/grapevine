@@ -68,6 +68,59 @@ describe("capture paths", () => {
       expect(records.map((record) => record.paths)).toEqual([[]]);
     }
   });
+
+  test("records the files a session read apart from the ones it changed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "grapevine-capture-"));
+    const [record] = await capture({
+      transcript: {
+        sessionId: "reads",
+        turns: [{ role: "user", text: "Why does the retry loop spin?" }],
+        touchedPaths: [join(root, "src", "retry.ts")],
+        readPaths: [join(root, "src", "retry.ts"), join(root, "src", "backoff.ts"), "/somewhere/else.ts"],
+      },
+      agent: "test",
+      store: memoryStore(),
+      summarizer: heuristicSummarizer(),
+      git: { root, repo: "github.com/acme/app", author: "dev@acme.com", changedPaths: [] },
+    });
+    expect(record).toMatchObject({ paths: ["src/retry.ts"], readPaths: ["src/backoff.ts"] });
+  });
+
+  test("files a session that changed nothing under the repo it read", async () => {
+    const dir = multiRepoWorkspace();
+    const turns = [{ role: "user" as const, text: "How does lib load its config?" }];
+    const options = { agent: "test", summarizer: heuristicSummarizer(), cwd: dir, detectPr: false };
+
+    const [inLib, ...rest] = await capture({
+      ...options,
+      store: memoryStore(),
+      transcript: {
+        sessionId: "read-lib",
+        turns,
+        touchedPaths: [],
+        readPaths: [join(dir, "lib", "index.ts"), join(dir, "lib", "config.ts"), join(dir, "app", "README.md")],
+      },
+    });
+    expect(rest).toEqual([]);
+    expect(inLib).toMatchObject({ repo: "github.com/acme/lib", branch: "main", paths: [] });
+    expect(inLib?.readPaths?.sort()).toEqual(["config.ts", "index.ts"]);
+    expect(inLib?.commit).toMatch(/^[0-9a-f]{40}$/);
+
+    // A read in the session's own folder keeps the record there, and reading a repo adds no record for it.
+    const records = await capture({
+      ...options,
+      store: memoryStore(),
+      transcript: {
+        sessionId: "read-here",
+        turns,
+        touchedPaths: [join(dir, "app", "src", "a.ts")],
+        readPaths: [join(dir, "lib", "index.ts"), join(dir, "app", "README.md")],
+      },
+    });
+    expect(records.map((record) => [record.repo, record.paths, record.readPaths])).toEqual([
+      ["github.com/acme/app", ["src/a.ts"], ["README.md"]],
+    ]);
+  });
 });
 
 describe("capture summaries", () => {

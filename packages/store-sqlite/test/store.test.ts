@@ -94,6 +94,33 @@ describe("SqliteStore", () => {
     expect(everywhere.map((result) => result.record.id)).toContain("other-repo");
   });
 
+  test("finds a file of the same name in another folder", async () => {
+    store = openSqliteStore(":memory:");
+    await store.upsert(record({ id: "same-name", paths: ["agents/globex/outreach/conduct.md"] }));
+    await store.upsert(record({ id: "top-level", paths: ["conduct.md"] }));
+    await store.upsert(record({ id: "longer-name", paths: ["agents/globex/outreach/misconduct.md"] }));
+    await store.upsert(record({ id: "other-file", paths: ["agents/globex/outreach/rules.md"] }));
+
+    const results = await store.search({ paths: ["agents/acme/tour/conduct.md"] });
+    expect(results.map((result) => result.record.id).sort()).toEqual(["same-name", "top-level"]);
+  });
+
+  test("keeps read paths apart from changed ones and finds records by them", async () => {
+    store = openSqliteStore(":memory:");
+    const original = record({ id: "a", paths: ["src/a.ts"], readPaths: ["docs/guide.md", "src/b.ts"] });
+    await store.upsert(original);
+    expect(await store.get("a")).toEqual(original);
+
+    const [found] = await store.search({ paths: ["docs/guide.md"] });
+    expect(found?.record.id).toBe("a");
+    expect(found?.matchedPaths).toEqual([]);
+    expect((await store.search({ text: "guide" })).map((result) => result.record.id)).toEqual(["a"]);
+
+    // A path that is both changed and read counts as changed.
+    await store.upsert({ ...original, readPaths: ["src/a.ts"] });
+    expect(await store.get("a")).toEqual({ ...original, readPaths: undefined });
+  });
+
   test("searches decisions and dead ends by text", async () => {
     store = openSqliteStore(":memory:");
     await store.upsert(record({ id: "redis", task: "Cache layer", deadEnds: [{ text: "Redis cluster mode broke MULTI", paths: [] }] }));
@@ -159,7 +186,8 @@ describe("SqliteStore", () => {
     await store.upsert(record({ id: "new", sessionKey: "test:old", paths: ["src/a.ts"] }));
     expect(await store.listBySession("test:old")).toHaveLength(2);
     expect(await store.delete("old")).toBe(true);
-    expect(await store.search({ paths: ["app/src/a.ts"] })).toEqual([]);
+    // The other record still matches, weakly, as a file of the same name.
+    expect((await store.search({ paths: ["app/src/a.ts"] })).map((result) => result.record.id)).toEqual(["new"]);
     store.close();
 
     // An older grapevine opening the file writes its version back; reopening must not rebuild or lose rows.
@@ -169,6 +197,10 @@ describe("SqliteStore", () => {
     store = openSqliteStore(path);
     expect((await store.listBySession("test:old")).map((found) => found.id)).toEqual(["new"]);
     expect((await store.get("new"))?.paths).toEqual(["src/a.ts"]);
+
+    // The paths table gained a column for read paths.
+    await store.upsert(record({ id: "new", sessionKey: "test:old", paths: ["src/a.ts"], readPaths: ["src/b.ts"] }));
+    expect(await store.get("new")).toMatchObject({ paths: ["src/a.ts"], readPaths: ["src/b.ts"] });
   });
 
   test("treats user text as literal FTS tokens", async () => {

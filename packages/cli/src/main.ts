@@ -11,7 +11,9 @@ import {
   ALL_REPOS,
   capture,
   changedSinceIn,
+  configPath,
   createSummarizer,
+  DEFAULT_PULL_INTERVAL_MINUTES,
   describeSummarizer,
   formatRecord,
   formatResults,
@@ -21,16 +23,27 @@ import {
   KEY_ENV,
   type KeyProvider,
   type KeySources,
+  lastPulledAt,
   loadConfig,
   loadCredentials,
+  loadSyncTarget,
+  pull,
+  pullIfStale,
+  push,
+  queuedChanges,
+  queueWrites,
+  relativeTime,
   resolveScope,
   resolveSummarizer,
   saveCredential,
   type Store,
   type Summarizer,
   type SummarizerProvider,
+  type SyncOptions,
+  type SyncTarget,
   searchScope,
   storePath,
+  syncDir,
   type Transcript,
   VERSION,
 } from "@chensterman/grapevine-core";
@@ -52,8 +65,10 @@ Usage:
       List the most recent sessions.
   grapevine capture --transcript <file> [--agent claude-code|cursor|codex] [--cwd <dir>] [--summarizer <provider>] [--json]
       Summarize and store one session now, whether or not it was shared in-session.
+  grapevine sync [--push] [--pull]
+      Send this machine's records to the team's sync target and fetch teammates' records. Both by default.
   grapevine status
-      Show the capture mode and which summarizer captures will use.
+      Show the capture mode, which summarizer captures will use, and the sync target.
   grapevine key set|remove anthropic|openai
       Save a model API key for grapevine only (read from a hidden prompt or stdin), or remove it.
   grapevine hook claude-code|cursor|codex
@@ -119,6 +134,62 @@ function log(message: string): void {
   console.error(`[${new Date().toISOString()}] ${message}`);
 }
 
+/** For this machine's own captures: with a sync target, each record written or deleted is also queued for it. */
+function ownStore(ctx: Context, store: Store): Store {
+  return ctx.config.sync ? queueWrites(store, syncDir(ctx.home)) : store;
+}
+
+let loadedTarget: Promise<SyncTarget> | undefined;
+
+async function syncOptions(ctx: Context, store: Store): Promise<SyncOptions> {
+  if (!ctx.config.sync) throw new Error(`No sync target is configured. Set "sync" in ${configPath(ctx.home)}.`);
+  loadedTarget ??= loadSyncTarget(ctx.config.sync, ctx.home);
+  return { target: await loadedTarget, store, dir: syncDir(ctx.home), onWarning: log };
+}
+
+/** Sends this machine's queued changes to the team. Never throws: what fails stays queued for the next push. */
+async function pushQueued(ctx: Context, store: Store): Promise<void> {
+  if (!ctx.config.sync) return;
+  try {
+    await push(await syncOptions(ctx, store));
+  } catch (error) {
+    log(`sync: push failed: ${String(error)}`);
+  }
+}
+
+/** How long an agent's lookup waits for teammates' records before answering from what is already local. */
+const LOOKUP_WAIT_MS = 4000;
+
+let refreshing: Promise<void> | undefined;
+
+/**
+ * Fetches teammates' records before a lookup when the last pull is old. Never throws: a lookup answers
+ * from what is already local. With `waitMs` it stops waiting after that long and the pull finishes in
+ * the background, which suits a long-running server.
+ */
+async function refreshFromTeam(ctx: Context, store: Store, waitMs?: number): Promise<void> {
+  const { sync } = ctx.config;
+  if (!sync) return;
+  refreshing ??= (async () => {
+    try {
+      const maxAgeMs = (sync.pullIntervalMinutes ?? DEFAULT_PULL_INTERVAL_MINUTES) * 60_000;
+      await pullIfStale({ ...(await syncOptions(ctx, store)), maxAgeMs });
+    } catch (error) {
+      log(`sync: pull failed: ${String(error)}`);
+    } finally {
+      refreshing = undefined;
+    }
+  })();
+  await (waitMs === undefined ? refreshing : Promise.race([refreshing, Bun.sleep(waitMs)]));
+}
+
+/** Runs another grapevine command detached from this process, with its output appended to a log file. */
+function runInBackground(args: string[], logFile: string): void {
+  const [command, ...prefix] = selfCommand();
+  const out = openSync(logFile, "a");
+  spawn(command!, [...prefix, ...args], { detached: true, stdio: ["ignore", out, out], env: process.env }).unref();
+}
+
 function logHookFailure(home: string, error: unknown): void {
   const line = `[${new Date().toISOString()}] hook failed: ${String(error)}\n`;
   try {
@@ -181,7 +252,7 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
     const records = await capture({
       transcript,
       agent: values.agent,
-      store,
+      store: ownStore(ctx, store),
       summarizer,
       cwd: values.cwd ?? transcript.cwd,
       redactPatterns: ctx.config.redact.patterns,
@@ -200,6 +271,7 @@ async function commandCapture(ctx: Context, args: string[]): Promise<void> {
         log(`captured ${record.id} in ${record.repo} with ${summarizer.name}: ${record.task}`);
       }
     }
+    await pushQueued(ctx, store);
   } finally {
     store.close();
   }
@@ -227,11 +299,13 @@ async function commandHook(ctx: Context, args: string[]): Promise<void> {
     if (state.shared !== false) {
       const store = openStore(ctx);
       try {
-        await store.deleteBySession(`${agentId}:${sessionId}`);
+        await ownStore(ctx, store).deleteBySession(`${agentId}:${sessionId}`);
       } finally {
         store.close();
       }
       writeFileSync(stateFile, JSON.stringify({ shared: false }));
+      // The hook has seconds to run, so the removal reaches the team from a background push.
+      if (ctx.config.sync) runInBackground(["sync", "--push"], join(logDir, "sync.log"));
     }
     return;
   }
@@ -242,14 +316,10 @@ async function commandHook(ctx: Context, args: string[]): Promise<void> {
   if (!isSessionEnd && Date.now() - lastCaptureAt < ctx.config.capture.minIntervalMinutes * 60_000) return;
   writeFileSync(stateFile, JSON.stringify({ lastCaptureAt: Date.now(), shared: true }));
 
-  const [command, ...prefix] = selfCommand();
-  const out = openSync(join(logDir, "capture.log"), "a");
-  const child = spawn(
-    command!,
-    [...prefix, "capture", "--agent", agentId!, "--transcript", input.transcript_path, "--cwd", input.cwd ?? process.cwd()],
-    { detached: true, stdio: ["ignore", out, out], env: process.env },
+  runInBackground(
+    ["capture", "--agent", agentId!, "--transcript", input.transcript_path, "--cwd", input.cwd ?? process.cwd()],
+    join(logDir, "capture.log"),
   );
-  child.unref();
 }
 
 async function commandSearch(ctx: Context, args: string[]): Promise<void> {
@@ -267,6 +337,7 @@ async function commandSearch(ctx: Context, args: string[]): Promise<void> {
   const scope = scopeOf(process.cwd(), values);
   const store = openStore(ctx);
   try {
+    await refreshFromTeam(ctx, store);
     const results = await searchScope(store, scope, { text: positionals.join(" "), limit: Number(values.limit) });
     if (values.json) console.log(JSON.stringify(results, null, 2));
     else {
@@ -292,6 +363,7 @@ async function commandRecent(ctx: Context, args: string[]): Promise<void> {
   const scope = scopeOf(process.cwd(), values);
   const store = openStore(ctx);
   try {
+    await refreshFromTeam(ctx, store);
     const records = await store.recent({ repos: scope.repos, limit: Number(values.limit) });
     const changedSince = changedSinceIn(scope.checkouts);
     if (values.json) console.log(JSON.stringify(records, null, 2));
@@ -315,6 +387,40 @@ function commandStatus(ctx: Context): void {
       : "Capture: opt-in (only sessions where the user asks the agent to share them).",
   );
   console.log(summarizerStatus(ctx));
+  console.log(syncStatus(ctx));
+}
+
+function syncStatus(ctx: Context): string {
+  if (!ctx.config.sync) return "Sync: off (records stay on this machine).";
+  const dir = syncDir(ctx.home);
+  const waiting = queuedChanges(dir);
+  const failing = waiting.find((change) => change.error);
+  const pulledAt = lastPulledAt(dir);
+  return [
+    `Sync: ${ctx.config.sync.target}.`,
+    `${waiting.length} change(s) waiting to be pushed${failing ? ` (last error: ${failing.error})` : ""}.`,
+    pulledAt ? `Last pull ${relativeTime(pulledAt)}.` : "Nothing pulled yet.",
+  ].join(" ");
+}
+
+async function commandSync(ctx: Context, args: string[]): Promise<void> {
+  const { values } = parseArgs({ args, options: { push: { type: "boolean" }, pull: { type: "boolean" } } });
+  const both = !values.push && !values.pull;
+  const retried = (failed: number) => (failed ? `, ${failed} failed and will be tried again` : "");
+  const store = openStore(ctx);
+  try {
+    const options = await syncOptions(ctx, store);
+    if (both || values.push) {
+      const sent = await push(options);
+      console.log(`Pushed ${sent.put}, removed ${sent.removed}${retried(sent.failed)}.`);
+    }
+    if (both || values.pull) {
+      const got = await pull(options);
+      console.log(`Pulled ${got.fetched} new or changed, removed ${got.removed}${retried(got.failed)}.`);
+    }
+  } finally {
+    store.close();
+  }
 }
 
 /** Reads a secret from a hidden terminal prompt, or from stdin when piped. */
@@ -444,18 +550,24 @@ export async function main(argv: string[]): Promise<number> {
     case "recent":
       await commandRecent(ctx, args);
       return 0;
+    case "sync":
+      await commandSync(ctx, args);
+      return 0;
     case "status":
       commandStatus(ctx);
       return 0;
     case "key":
       await commandKey(ctx, args);
       return 0;
-    case "mcp":
+    case "mcp": {
+      const store = openStore(ctx);
       await runStdioServer({
-        store: openStore(ctx),
+        store,
         summarizerStatus: () => summarizerStatus({ home, config: loadConfig(home) }),
+        refresh: () => refreshFromTeam(ctx, store, LOOKUP_WAIT_MS),
       });
       return 0;
+    }
     default:
       console.error(`Unknown command "${command}".\n\n${USAGE}`);
       return 1;

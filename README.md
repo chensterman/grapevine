@@ -9,7 +9,7 @@ grapevine is path-indexed team memory for coding agents. When you ask your agent
 - **Distilled, not transcripts.** Only redacted summaries are stored. Raw transcripts stay on the author's machine.
 - **Yours.** Local SQLite today; bring your own model for summaries, including local ones.
 
-> Status: early (v0.1). Works locally for one person with Claude Code, Cursor, and Codex. Team sharing is next; see the [roadmap](#roadmap).
+> Status: early (v0.1). Works locally for one person with Claude Code, Cursor, and Codex. A team shares records through a [sync target](#team-sharing) it plugs in; none ships with grapevine yet. See the [roadmap](#roadmap).
 
 ## How it works
 
@@ -57,7 +57,32 @@ The model must cite the transcript turns behind each item. Capture drops items w
 
 Sessions are captured only when you ask. Tell your agent "share this session" (or "record this for the team") and it calls grapevine's `share_session` tool. That call lands in the session's transcript, which is how the hook knows the session is opted in; the MCP server itself stores nothing. You can ask at any point: the summary always covers the whole session, including what came before. Say "stop sharing" and the agent calls `stop_sharing`, which stops capture and deletes the session's record.
 
-Once a session is shared, capture is throttled: the Claude Code and Codex `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine summarizes right away, then at most every 15 minutes (configurable), and always when the session ends. Each session has one record per repo it changed files in, updated in place. Each file is filed under its own checkout, so a session that runs from a folder holding several clones or worktrees is recorded under the right repos, with repo-relative paths. To capture everything without asking, set `capture.mode` to `always`. To capture a finished session after the fact, run `grapevine capture --transcript <file>`.
+Once a session is shared, capture is throttled: the Claude Code and Codex `Stop` and Cursor `stop` hooks fire after every agent turn, so grapevine summarizes right away, then at most every 15 minutes (configurable), and always when the session ends. Each session has one record per repo it changed files in, updated in place. Each file is filed under its own checkout, so a session that runs from a folder holding several clones or worktrees is recorded under the right repos, with repo-relative paths. Files the agent read with its read tool (Claude Code and Cursor) are kept on the record as `readPaths` and count for half a changed file in a lookup. A session that changed nothing gets one record, in the repo it ran in when it read files there and otherwise in the repo it read the most. To capture everything without asking, set `capture.mode` to `always`. To capture a finished session after the fact, run `grapevine capture --transcript <file>`.
+
+### Team sharing
+
+Records stay on your machine until you configure a sync target: a shared place that keeps the team's records, such as a server, a git repo, or a document store. A target is a module that implements four operations:
+
+```ts
+import type { CreateSyncTarget } from "@chensterman/grapevine-core";
+
+export const createSyncTarget: CreateSyncTarget = (options) => ({
+  put: async (record) => {},     // store the record under record.id
+  remove: async (id) => {},      // remove it; not an error when it is absent
+  list: async () => [],          // every record held now, as { id, version }
+  get: async (id) => null,       // the record, or null
+});
+```
+
+Point `sync.target` in the config at the module and grapevine does the rest:
+
+- Search and ranking stay on the local store, so a lookup works when the target is down.
+- A capture is written locally, queued, and pushed in the background. A push that fails stays queued and is sent with the next one.
+- Before a lookup, grapevine pulls records that are new or changed and deletes the ones the target dropped. It pulls at most every 5 minutes, and an agent's lookup waits 4 seconds at most.
+- `stop_sharing` removes the session's record from the target as well.
+- Records you pushed are never overwritten by the target's copy, so a target may rewrite what it stores.
+
+`grapevine sync` pushes and pulls now, and `grapevine status` shows what is waiting. Records captured before the target was configured are not pushed.
 
 ## Quick start
 
@@ -105,7 +130,8 @@ grapevine search -p src/webhooks/retry.ts        # what do we know about this fi
 grapevine search "redis cluster multi"           # full-text over tasks, decisions, dead ends
 grapevine recent --all-repos                     # newest sessions everywhere
 grapevine capture --transcript ~/.claude/projects/<project>/<session>.jsonl   # share a past session
-grapevine status                                 # capture mode and summarizer
+grapevine status                                 # capture mode, summarizer, and sync target
+grapevine sync                                   # push queued records and pull teammates' records now
 grapevine key set openai                         # save a key for grapevine only
 grapevine mcp                                    # MCP server on stdio
 ```
@@ -123,7 +149,7 @@ Searches are scoped to the repo you're in (by normalized `origin` URL) unless yo
 | `stop_sharing` | Stops capture and deletes this session's record. |
 | `summarizer_setup` | Which summarizer runs, and step-by-step setup for a key or local model. |
 
-Results are ranked by path proximity (same file, then same directory, then nearby), full-text match, and recency.
+Results are ranked by path proximity (same file, then same directory, then nearby or a file of the same name in another folder), full-text match, and recency. A file a session only read counts for half a changed one.
 
 ## Configuration
 
@@ -139,7 +165,8 @@ Results are ranked by path proximity (same file, then same directory, then nearb
   },
   "redact": { "patterns": ["acme-customer-\\d+"] },
   "capture": { "mode": "opt-in", "minIntervalMinutes": 15, "detectPr": true, "issuePattern": "([a-z]+-\\d+)" },
-  "store": { "type": "sqlite", "path": "/custom/grapevine.db" }
+  "store": { "type": "sqlite", "path": "/custom/grapevine.db" },
+  "sync": { "target": "~/team/grapevine-target.ts", "options": { "team": "acme" }, "pullIntervalMinutes": 5 }
 }
 ```
 
@@ -149,6 +176,7 @@ Results are ranked by path proximity (same file, then same directory, then nearb
 - `redact.patterns`: extra regexes, applied on top of the built-in secret patterns.
 - `capture.issuePattern`: pulls an issue key such as `ENG-42` out of branch names. Off by default.
 - `capture.detectPr`: looks up the branch's PR with `gh` when available.
+- `sync.target`: the module that implements the team's [sync target](#team-sharing): a file path (absolute, `~/…`, or `./…` from the grapevine home), or the name of a package installed where grapevine can import it. `sync.options` is passed to it as is. Off by default.
 
 ## Privacy
 
@@ -156,12 +184,13 @@ Results are ranked by path proximity (same file, then same directory, then nearb
 - Nothing is summarized unless you share the session (or set `capture.mode` to `always`).
 - With no grapevine key configured, nothing leaves your machine. With one, the redacted transcript of shared sessions is sent to that model. Use a local model if transcripts can't leave your machine.
 - Only the distilled record is stored. `transcriptRef` is a local file path, never the transcript itself.
+- With a sync target configured, the distilled record of each shared session is sent to it, without `transcriptRef`. Transcripts are never sent.
 
 ## Architecture
 
 | Package | Purpose |
 | --- | --- |
-| [`@chensterman/grapevine-core`](packages/core) | Record format, redaction, summarizers, path ranking, git inspection, `Store` interface |
+| [`@chensterman/grapevine-core`](packages/core) | Record format, redaction, summarizers, path ranking, git inspection, `Store` and `SyncTarget` interfaces |
 | [`@chensterman/grapevine-store-sqlite`](packages/store-sqlite) | Local SQLite + FTS5 store |
 | [`@chensterman/grapevine-adapter-claude-code`](packages/adapter-claude-code) | Claude Code transcript parser and hook installer |
 | [`@chensterman/grapevine-adapter-cursor`](packages/adapter-cursor) | Cursor transcript parser and hook installer |
@@ -169,11 +198,11 @@ Results are ranked by path proximity (same file, then same directory, then nearb
 | [`@chensterman/grapevine-mcp`](packages/mcp) | MCP server |
 | [`@chensterman/grapevine`](packages/cli) | `grapevine` CLI |
 
-Adding an agent means writing an adapter that turns its transcript into the core `Transcript` type and installs its hooks. Adding a backend means implementing `Store`.
+Adding an agent means writing an adapter that turns its transcript into the core `Transcript` type and installs its hooks. Adding a local backend means implementing `Store`. Sharing with a team means implementing `SyncTarget`.
 
 ## Roadmap
 
-- **Team sharing:** a self-hostable server (`grapevine serve`, Postgres) and a git-backed store (records as Markdown in a shared repo, no server).
+- **Sync targets:** ship two with grapevine: a git-backed one (records as files in a shared repo, no server) and a self-hostable server (`grapevine serve`, Postgres). Add a command that pushes records captured before a target was configured.
 - **Review before publish:** queue records locally so authors can edit or drop them before teammates see them.
 - **More agents:** Grok Build and Orca adapters.
 - **Overlap detection:** warn when two people's active sessions touch the same paths.

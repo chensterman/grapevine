@@ -45,13 +45,16 @@ export function formatRecord(record: ContextRecord, options: FormatOptions = {})
     record.pr && `PR ${record.pr}`,
     record.issue && `issue ${record.issue}`,
   ].filter(Boolean);
-  const shown = record.paths.slice(0, MAX_LISTED_PATHS).join(", ");
-  const more = record.paths.length > MAX_LISTED_PATHS ? ` (+${record.paths.length - MAX_LISTED_PATHS} more)` : "";
+  const listed = (paths: string[]) =>
+    paths.slice(0, MAX_LISTED_PATHS).join(", ") +
+    (paths.length > MAX_LISTED_PATHS ? ` (+${paths.length - MAX_LISTED_PATHS} more)` : "");
+  const readPaths = record.readPaths ?? [];
   return [
     `### ${record.task}`,
     `${record.status} · ${record.author} via ${record.agent} · ${relativeTime(record.updatedAt, now)} · ${record.repo}`,
     ...(links.length ? [links.join(" · ")] : []),
-    ...(record.paths.length ? [`Paths: ${shown}${more}`] : []),
+    ...(record.paths.length ? [`Paths: ${listed(record.paths)}`] : []),
+    ...(readPaths.length ? [`Read without changing: ${listed(readPaths)}`] : []),
     ...(changedPaths.length
       ? [`Changed since this session: ${changedPaths.join(", ")}. Check the current code before relying on notes about them.`]
       : []),

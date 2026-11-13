@@ -16,6 +16,9 @@ const EDIT_TOOLS: Record<string, string> = {
   NotebookEdit: "notebook_path",
 };
 
+/** Claude Code tools whose input names a file being read. */
+const READ_TOOLS: Record<string, string> = { Read: "file_path", NotebookRead: "notebook_path" };
+
 /** Harness-generated user messages (slash commands, their output) that aren't the person talking. */
 const HARNESS_PREFIXES = ["<command-", "<local-command-"];
 
@@ -59,6 +62,7 @@ function toolResultText(content: unknown): string {
 export function parseClaudeTranscript(jsonl: string, fallbackSessionId = "unknown"): Transcript {
   const turns: TranscriptTurn[] = [];
   const touched = new Set<string>();
+  const read = new Set<string>();
   let sessionId: string | undefined;
   let cwd: string | undefined;
   let branch: string | undefined;
@@ -101,6 +105,9 @@ export function parseClaudeTranscript(jsonl: string, fallbackSessionId = "unknow
         const pathKey = EDIT_TOOLS[block.name];
         const path = pathKey ? input[pathKey] : undefined;
         if (typeof path === "string") touched.add(path);
+        const readKey = READ_TOOLS[block.name];
+        const readPath = readKey ? input[readKey] : undefined;
+        if (typeof readPath === "string") read.add(readPath);
         if (block.name === "Bash") ranCommands = true;
         shareRequest = shareRequestFromToolCall(block.name, input) ?? shareRequest;
       } else if (block.type === "tool_result") {
@@ -118,6 +125,7 @@ export function parseClaudeTranscript(jsonl: string, fallbackSessionId = "unknow
     endedAt,
     turns,
     touchedPaths: [...touched],
+    readPaths: [...read].filter((path) => !touched.has(path)),
     ranCommands,
     shareRequest,
   };

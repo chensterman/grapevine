@@ -12,7 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const INSTRUCTIONS = `grapevine holds notes from teammates' coding-agent sessions: what they worked on, decisions they made, approaches that failed, and open questions, indexed by the files they changed.
+const INSTRUCTIONS = `grapevine holds notes from teammates' coding-agent sessions: what they worked on, decisions they made, approaches that failed, and open questions, indexed by the files they changed or read.
 
 Call context_for before starting a task or editing files, with the paths you plan to touch and a short description of the task. Treat the results as a teammate's notes: reuse their decisions, avoid their dead ends, and tell the user when your plan conflicts with work in progress. Notes marked "changed since" are about files that changed after the session, so check the current code before relying on them.
 
@@ -24,6 +24,8 @@ export interface ServerOptions {
   defaultCwd?: string;
   /** Describes which summarizer captures will use and how to set one up. */
   summarizerStatus?: () => string;
+  /** Runs before each lookup, e.g. to pull teammates' records into the store. Must not throw. */
+  refresh?: () => Promise<void>;
 }
 
 const scopeFields = {
@@ -44,6 +46,7 @@ export function createGrapevineServer({
   store,
   defaultCwd = process.cwd(),
   summarizerStatus = () => "Summarizer status is unavailable.",
+  refresh = async () => {},
 }: ServerOptions): McpServer {
   const server = new McpServer({ name: "grapevine", version: VERSION }, { instructions: INSTRUCTIONS });
 
@@ -64,6 +67,7 @@ export function createGrapevineServer({
       },
     },
     async ({ paths, query, limit, cwd, repo }) => {
+      await refresh();
       const scope = scopeOf(cwd, repo, paths);
       const results = await searchScope(store, scope, { text: query, limit: limit ?? 5 });
       return text(
@@ -82,6 +86,7 @@ export function createGrapevineServer({
       inputSchema: { limit: z.number().int().min(1).max(50).optional(), ...scopeFields },
     },
     async ({ limit, cwd, repo }) => {
+      await refresh();
       const scope = scopeOf(cwd, repo);
       const records = await store.recent({ repos: scope.repos, limit: limit ?? 10 });
       const changedSince = changedSinceIn(scope.checkouts);
@@ -101,6 +106,7 @@ export function createGrapevineServer({
       inputSchema: { path: z.string().describe("File or directory."), ...scopeFields },
     },
     async ({ path, cwd, repo }) => {
+      await refresh();
       const results = await searchScope(store, scopeOf(cwd, repo, [path]), { limit: 50 });
       const byAuthor = new Map<string, { count: number; latestTask: string; latestAt: string }>();
       for (const { record, matchedPaths } of results) {

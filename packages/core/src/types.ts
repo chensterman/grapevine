@@ -26,6 +26,8 @@ export interface ContextRecord {
   task: string;
   /** Repo-relative paths the session changed. */
   paths: string[];
+  /** Repo-relative paths the session read without changing. They count for less than `paths` in a lookup. */
+  readPaths?: string[];
   decisions: RecordItem[];
   deadEnds: RecordItem[];
   openQuestions: RecordItem[];

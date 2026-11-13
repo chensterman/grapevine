@@ -33,6 +33,12 @@ describe("formatRecord", () => {
     expect(formatRecord(record)).not.toContain("changed since");
   });
 
+  test("lists files the session read apart from the ones it changed", () => {
+    expect(formatRecord(record)).not.toContain("Read without changing");
+    const text = formatRecord({ ...record, readPaths: ["docs/guide.md"] });
+    expect(text).toContain("Paths: src/retry.ts, src/queue.ts\nRead without changing: docs/guide.md\n");
+  });
+
   test("shows pending items only while the record is fresh", () => {
     const day = 86_400_000;
     const capturedAt = Date.parse(record.updatedAt);

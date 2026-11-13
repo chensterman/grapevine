@@ -16,6 +16,9 @@ const EDIT_TOOLS: Record<string, string> = {
   EditNotebook: "target_notebook",
 };
 
+/** Cursor tools whose input names a file being read. */
+const READ_TOOLS: Record<string, string> = { Read: "path" };
+
 const SHELL_TOOLS = new Set(["Shell", "run_terminal_cmd"]);
 
 const DESCRIBE_KEYS = [
@@ -74,6 +77,7 @@ export function userQuery(text: string): string {
 export function parseCursorTranscript(jsonl: string, sessionId = "unknown"): Transcript {
   const turns: TranscriptTurn[] = [];
   const touched = new Set<string>();
+  const read = new Set<string>();
   let startedAt: string | undefined;
   let endedAt: string | undefined;
   let shareRequest: ShareRequest | undefined;
@@ -111,13 +115,17 @@ export function parseCursorTranscript(jsonl: string, sessionId = "unknown"): Tra
         const pathKey = EDIT_TOOLS[block.name];
         const path = pathKey ? input[pathKey] : undefined;
         if (typeof path === "string") touched.add(path);
+        const readKey = READ_TOOLS[block.name];
+        const readPath = readKey ? input[readKey] : undefined;
+        if (typeof readPath === "string") read.add(readPath);
         if (SHELL_TOOLS.has(block.name)) ranCommands = true;
         shareRequest = shareRequestFromToolCall(block.name, input) ?? shareRequest;
       }
     }
   }
 
-  return { sessionId, startedAt, endedAt, turns, touchedPaths: [...touched], ranCommands, shareRequest };
+  const readPaths = [...read].filter((path) => !touched.has(path));
+  return { sessionId, startedAt, endedAt, turns, touchedPaths: [...touched], readPaths, ranCommands, shareRequest };
 }
 
 export interface CursorHookInput {

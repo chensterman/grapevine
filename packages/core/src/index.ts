@@ -8,6 +8,7 @@ export * from "./redact.ts";
 export * from "./scope.ts";
 export * from "./store.ts";
 export * from "./summarize.ts";
+export * from "./sync.ts";
 export * from "./transcript.ts";
 export * from "./types.ts";
 

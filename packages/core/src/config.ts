@@ -12,8 +12,24 @@ export type SummarizerProvider = "auto" | "anthropic" | "openai-compatible" | "h
 export type CaptureMode = "opt-in" | "always";
 export type KeyProvider = "anthropic" | "openai";
 
+/** Where records are shared with a team. Without it they stay on this machine. */
+export interface SyncConfig {
+  /**
+   * A module that exports `createSyncTarget(options)`: a file path (absolute, `~/…`, or `./…` from the
+   * grapevine home), or the name of a package installed where grapevine can import it.
+   */
+  target: string;
+  /** Passed to the target as they are. */
+  options?: Record<string, unknown>;
+  /** Minutes a lookup trusts the last pull before pulling again. Defaults to 5. */
+  pullIntervalMinutes?: number;
+}
+
+export const DEFAULT_PULL_INTERVAL_MINUTES = 5;
+
 export interface GrapevineConfig {
   store: { type: "sqlite"; path?: string };
+  sync?: SyncConfig;
   summarizer: {
     provider: SummarizerProvider;
     model?: string;
@@ -85,6 +101,7 @@ export function loadConfig(home = grapevineHome()): GrapevineConfig {
   const file = JSON.parse(readFileSync(path, "utf8")) as Partial<GrapevineConfig>;
   return {
     store: { ...DEFAULT_CONFIG.store, ...file.store },
+    ...(file.sync?.target ? { sync: file.sync } : {}),
     summarizer: { ...DEFAULT_CONFIG.summarizer, ...file.summarizer },
     redact: { ...DEFAULT_CONFIG.redact, ...file.redact },
     capture: { ...DEFAULT_CONFIG.capture, ...file.capture },

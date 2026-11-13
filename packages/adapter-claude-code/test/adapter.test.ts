@@ -27,6 +27,15 @@ describe("parseClaudeTranscript", () => {
     expect(transcript.ranCommands).toBe(false);
   });
 
+  test("collects files that were read and never edited", () => {
+    expect(transcript.readPaths).toEqual([]);
+    const reading = `${fixture}\n${JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "tool_use", name: "Read", input: { file_path: "/work/app/src/webhooks/queue.ts" } }] },
+    })}`;
+    expect(parseClaudeTranscript(reading).readPaths).toEqual(["/work/app/src/webhooks/queue.ts"]);
+  });
+
   test("turns tool calls and results into short tool turns", () => {
     const tools = transcript.turns.filter((turn) => turn.role === "tool").map((turn) => turn.text);
     expect(tools).toContain("Read(/work/app/src/webhooks/retry.ts)");

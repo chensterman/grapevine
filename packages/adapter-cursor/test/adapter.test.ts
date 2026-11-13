@@ -34,6 +34,15 @@ describe("parseCursorTranscript", () => {
     expect(transcript.ranCommands).toBe(true);
   });
 
+  test("collects files that were read and never edited", () => {
+    expect(transcript.readPaths).toEqual([]);
+    const reading = `${fixture}\n${JSON.stringify({
+      role: "assistant",
+      message: { content: [{ type: "tool_use", name: "Read", input: { path: "/work/app/src/webhooks/queue.ts" } }] },
+    })}`;
+    expect(parseCursorTranscript(reading).readPaths).toEqual(["/work/app/src/webhooks/queue.ts"]);
+  });
+
   test("turns tool calls into short tool turns", () => {
     const tools = transcript.turns.filter((turn) => turn.role === "tool").map((turn) => turn.text);
     expect(tools).toEqual([

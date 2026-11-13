@@ -14,7 +14,7 @@ import {
   type Store,
 } from "@chensterman/grapevine-core";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const CANDIDATE_LIMIT = 200;
 
 const recordsTable = (name: string) => `
@@ -51,6 +51,7 @@ CREATE INDEX IF NOT EXISTS records_repo_updated ON records (repo, updated_at DES
 CREATE TABLE IF NOT EXISTS record_paths (
   record_id TEXT NOT NULL REFERENCES records (id) ON DELETE CASCADE,
   path TEXT NOT NULL,
+  read INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (record_id, path)
 );
 CREATE INDEX IF NOT EXISTS record_paths_path ON record_paths (path);
@@ -159,8 +160,12 @@ class SqliteStore implements Store {
         });
 
       this.db.query("DELETE FROM record_paths WHERE record_id = $id").run({ id });
-      const insertPath = this.db.query("INSERT OR IGNORE INTO record_paths (record_id, path) VALUES ($id, $path)");
-      for (const path of record.paths) insertPath.run({ id, path: normalizePath(path) });
+      const insertPath = this.db.query(
+        "INSERT OR IGNORE INTO record_paths (record_id, path, read) VALUES ($id, $path, $read)",
+      );
+      // Changed paths go in first, so a path that was both changed and read counts as changed.
+      for (const path of record.paths) insertPath.run({ id, path: normalizePath(path), read: 0 });
+      for (const path of record.readPaths ?? []) insertPath.run({ id, path: normalizePath(path), read: 1 });
 
       this.db.query("DELETE FROM records_fts WHERE record_id = $id").run({ id });
       this.db
@@ -174,7 +179,7 @@ class SqliteStore implements Store {
           decisions: itemText(record.decisions),
           deadEnds: itemText(record.deadEnds),
           openQuestions: itemText(record.openQuestions),
-          paths: record.paths.join(" "),
+          paths: [...record.paths, ...(record.readPaths ?? [])].join(" "),
         });
     })();
   }
@@ -239,6 +244,18 @@ class SqliteStore implements Store {
         ids.add(row.record_id);
       }
     }
+    // Files of the same name in other folders. The pattern starts with a wildcard, so this scans the paths
+    // table, which is fine at the size of one team's records.
+    const byName = this.db.query<{ record_id: string }, { name: string; like: string; repos: string | null; limit: number }>(
+      `SELECT DISTINCT p.record_id FROM record_paths p JOIN records r ON r.id = p.record_id
+       WHERE (p.path = $name OR p.path LIKE $like ESCAPE '\\') AND ${IN_REPOS}
+       ORDER BY r.updated_at DESC LIMIT $limit`,
+    );
+    for (const name of new Set(paths.map((path) => path.slice(path.lastIndexOf("/") + 1)))) {
+      for (const row of byName.all({ name, like: `%/${escapeLike(name)}`, repos, limit: CANDIDATE_LIMIT })) {
+        ids.add(row.record_id);
+      }
+    }
 
     const textScores = new Map<string, number>();
     if (fts) {
@@ -283,13 +300,15 @@ class SqliteStore implements Store {
     if (rows.length === 0) return [];
     const placeholders = rows.map(() => "?").join(", ");
     const pathRows = this.db
-      .query<{ record_id: string; path: string }, string[]>(
-        `SELECT record_id, path FROM record_paths WHERE record_id IN (${placeholders}) ORDER BY path`,
+      .query<{ record_id: string; path: string; read: number }, string[]>(
+        `SELECT record_id, path, read FROM record_paths WHERE record_id IN (${placeholders}) ORDER BY path`,
       )
       .all(...rows.map((row) => row.id));
     const pathsById = new Map<string, string[]>();
-    for (const { record_id, path } of pathRows) {
-      pathsById.set(record_id, [...(pathsById.get(record_id) ?? []), path]);
+    const readById = new Map<string, string[]>();
+    for (const { record_id, path, read } of pathRows) {
+      const byId = read ? readById : pathsById;
+      byId.set(record_id, [...(byId.get(record_id) ?? []), path]);
     }
     return rows.map((row) => ({
       id: row.id,
@@ -304,6 +323,7 @@ class SqliteStore implements Store {
       updatedAt: row.updated_at,
       task: row.task,
       paths: pathsById.get(row.id) ?? [],
+      readPaths: readById.get(row.id),
       decisions: parseItems(row.decisions),
       deadEnds: parseItems(row.dead_ends),
       openQuestions: parseItems(row.open_questions),
@@ -332,6 +352,10 @@ function migrate(db: Database): void {
       DROP TABLE records;
       ALTER TABLE records_next RENAME TO records;
     `);
+  }
+  const pathColumns = db.query<{ name: string }, []>("PRAGMA table_info(record_paths)").all().map((column) => column.name);
+  if (pathColumns.length > 0 && !pathColumns.includes("read")) {
+    db.exec("ALTER TABLE record_paths ADD COLUMN read INTEGER NOT NULL DEFAULT 0");
   }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
